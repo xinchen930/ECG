@@ -1,0 +1,39 @@
+# Scheme C: MTTS-CAN-inspired dual-branch + TSM, lightweight
+# Inspired by: https://github.com/xliucs/MTTS-CAN (NeurIPS 2020)
+# Key ideas: normalized difference frames, appearance-gated attention, temporal shift module
+scheme_name: scheme_c
+
+data:
+  samples_dir: training_data/samples
+  window_seconds: 10
+  stride_seconds: 5
+  video_fps: 30
+  ecg_sr: 250
+  img_height: 36
+  img_width: 36
+  use_imu: false
+  use_diff_frames: true
+  num_workers: 4
+
+split:
+  train_users: [fzq, fcy, wjy, czq, syw, wcp]
+  val_users: [nxs]
+  test_users: [lrk, fhy]
+
+model:
+  type: mtts_can
+  encoder_channels: [32, 64]
+  temporal_channels: [128, 64, 32]
+  upsample_factor: 8
+
+train:
+  epochs: 100
+  batch_size: 32
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  patience: 20
+  grad_clip: 1.0
+  seed: 42
+  loss: composite
+  alpha_freq: 0.1
+  beta_pearson: 0.1

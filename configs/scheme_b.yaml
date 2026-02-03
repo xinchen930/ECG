@@ -1,0 +1,38 @@
+# Scheme B: Enhanced - ResNet-50 (224x224), video + IMU, composite loss
+scheme_name: scheme_b
+
+data:
+  samples_dir: training_data/samples
+  window_seconds: 10
+  stride_seconds: 5
+  video_fps: 30
+  ecg_sr: 250
+  img_height: 224
+  img_width: 224
+  use_imu: true
+  imu_sr: 100
+  num_workers: 4
+
+split:
+  train_users: [fzq, fcy, wjy, czq, syw, wcp]
+  val_users: [nxs]
+  test_users: [lrk, fhy]
+
+model:
+  encoder: resnet50
+  encoder_dim: 2048
+  temporal_channels: [512, 256, 128]
+  upsample_factor: 8
+  imu_dim: 64
+
+train:
+  epochs: 100
+  batch_size: 8
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  patience: 15
+  grad_clip: 1.0
+  seed: 42
+  loss: composite
+  alpha_freq: 0.1
+  beta_pearson: 0.1

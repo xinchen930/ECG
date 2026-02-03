@@ -1,0 +1,43 @@
+# Scheme D: 1D Signal-Centric TCN, ultra-lightweight
+# Extracts per-frame RGB means as 1D signal, then uses TCN for temporal modeling
+# Ideal for small datasets - minimal overfitting risk
+scheme_name: scheme_d
+
+data:
+  samples_dir: training_data/samples
+  window_seconds: 10
+  stride_seconds: 5
+  video_fps: 30
+  ecg_sr: 250
+  img_height: 64
+  img_width: 64
+  use_imu: false
+  use_diff_frames: false
+  use_1d_signal: true
+  num_workers: 4
+
+split:
+  train_users: [fzq, fcy, wjy, czq, syw, wcp]
+  val_users: [nxs]
+  test_users: [lrk, fhy]
+
+model:
+  type: signal_1d
+  in_channels: 3
+  encoder_channels: [32, 64, 128]
+  decoder_channels: [64, 32]
+  kernel_size: 7
+  upsample_factor: 8
+  dropout: 0.1
+
+train:
+  epochs: 200
+  batch_size: 64
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  patience: 30
+  grad_clip: 1.0
+  seed: 42
+  loss: composite
+  alpha_freq: 0.1
+  beta_pearson: 0.1
