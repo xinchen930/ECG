@@ -1,0 +1,9 @@
+{
+  "measurementState" : "walking",
+  "diastolicPressure" : 68,
+  "bloodOxygen" : 96,
+  "systolicPressure" : 111,
+  "heartRate" : 82,
+  "respiration" : 16,
+  "note" : "平躺"
+}

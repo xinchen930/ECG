@@ -1,0 +1,9 @@
+{
+  "measurementState" : "resting",
+  "diastolicPressure" : 62,
+  "bloodOxygen" : 98,
+  "systolicPressure" : 100,
+  "heartRate" : 55,
+  "respiration" : 12,
+  "note" : "饭前平躺"
+}

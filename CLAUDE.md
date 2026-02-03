@@ -159,8 +159,7 @@ phone_dataset/         # 手机采集的多模态数据（模型输入）
 
 training_data/samples/  # 预处理后的训练样本（98个）
   └── pair_XXXX/
-      ├── video_0.mp4        # = camera_0（手指PPG视频，红色通道主导，G/B≈0）
-      ├── video_1.mp4        # = camera_1（正常录像，RGB均匀分布）
+      ├── video_0.mp4        # = camera_0（手指PPG视频，红色通道主导，已校验 R>G,B）
       ├── ecg.csv            # ECG波形 ground truth (250 Hz)
       ├── imu.csv            # 加速度计+陀螺仪 (~100 Hz)
       ├── annotation.json    # 心率、血压、血氧、呼吸、状态

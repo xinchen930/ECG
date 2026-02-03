@@ -1,0 +1,9 @@
+{
+  "diastolicPressure" : 88,
+  "bloodOxygen" : 94,
+  "systolicPressure" : 141,
+  "respiration" : 20,
+  "note" : "坐，出汗中途电极片掉下来一次",
+  "measurementState" : "highKnee",
+  "heartRate" : 151
+}

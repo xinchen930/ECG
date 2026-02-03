@@ -1,0 +1,9 @@
+{
+  "diastolicPressure" : 66,
+  "bloodOxygen" : 96,
+  "systolicPressure" : 106,
+  "respiration" : 17,
+  "note" : "喝过咖啡，坐",
+  "measurementState" : "afterMeal",
+  "heartRate" : 91
+}

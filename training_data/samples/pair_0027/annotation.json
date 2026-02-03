@@ -1,0 +1,9 @@
+{
+  "measurementState" : "afterMeal",
+  "diastolicPressure" : 72,
+  "bloodOxygen" : 95,
+  "systolicPressure" : 119,
+  "heartRate" : 89,
+  "respiration" : 16,
+  "note" : "站立"
+}

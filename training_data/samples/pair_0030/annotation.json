@@ -1,0 +1,9 @@
+{
+  "diastolicPressure" : 88,
+  "bloodOxygen" : 95,
+  "systolicPressure" : 141,
+  "respiration" : 17,
+  "note" : "坐",
+  "measurementState" : "highKnee",
+  "heartRate" : 122
+}
