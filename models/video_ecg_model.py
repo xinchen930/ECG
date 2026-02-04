@@ -508,8 +508,9 @@ class CompositeLoss(nn.Module):
 
     def _spectral_loss(self, pred, target):
         """L1 loss on FFT magnitudes."""
-        pred_fft = torch.fft.rfft(pred, dim=-1)
-        tgt_fft = torch.fft.rfft(target, dim=-1)
+        # cuFFT 在 FP16 下只支持 2 的幂次方，强制用 FP32
+        pred_fft = torch.fft.rfft(pred.float(), dim=-1)
+        tgt_fft = torch.fft.rfft(target.float(), dim=-1)
         return F.l1_loss(pred_fft.abs(), tgt_fft.abs())
 
     def _pearson_loss(self, pred, target):
