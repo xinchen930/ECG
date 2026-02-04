@@ -28,7 +28,9 @@ model:
 
 train:
   epochs: 100
-  batch_size: 32
+  batch_size: 16  # 3090 24GB; A6000 可改回 32
+  gradient_accumulation_steps: 2  # 有效 batch = 16*2 = 32
+  use_amp: true   # 混合精度
   lr: 1.0e-3
   weight_decay: 1.0e-4
   patience: 20

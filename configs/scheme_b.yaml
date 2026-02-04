@@ -27,8 +27,8 @@ model:
 
 train:
   epochs: 100
-  batch_size: 4   # 3090 24GB: 8 会 OOM，用 4；若仍 OOM 可改为 2 并设 gradient_accumulation_steps: 2
-  gradient_accumulation_steps: 2  # 有效 batch = 4*2 = 8，与原先一致
+  batch_size: 2   # 3090 24GB; A6000 可改回 4
+  gradient_accumulation_steps: 4  # 有效 batch = 2*4 = 8
   use_amp: true   # 混合精度，显著省显存
   lr: 1.0e-4
   weight_decay: 1.0e-4
