@@ -1,0 +1,12 @@
+{
+  "config": "configs/scheme_a.yaml",
+  "checkpoint": "checkpoints/scheme_a/best_model.pt",
+  "timestamp": "20260204_153644",
+  "device": "cuda",
+  "scheme_name": "scheme_a",
+  "metrics": {
+    "rmse": 0.9953897595405579,
+    "mae": 0.5898448824882507,
+    "pearson_r": 0.021946517265405606
+  }
+}

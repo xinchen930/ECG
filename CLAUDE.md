@@ -27,13 +27,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Running the Project
 
-使用 **anoshift** conda环境：
+**环境**：使用 conda 环境 **torch**（服务器）或 anoshift（本地）。代码中未写死环境名，无需改任何文件。
+
 ```bash
-/Users/zhangxinchen/miniconda3/bin/conda run -n anoshift python script.py
-/Users/zhangxinchen/miniconda3/bin/conda run -n anoshift pip install <package>
+conda activate torch
+# 安装依赖（若未装）
+pip install numpy pandas scipy pyyaml opencv-python-headless torch torchvision
 ```
 
 **已安装依赖**：numpy, pandas, scipy, matplotlib, plotly, fastparquet, pyarrow, opencv-python-headless, torch, torchvision, pyyaml
+
+### 如何开始训练、测试
+
+在**项目根目录**（即 `ECG/`，保证存在 `training_data/samples` 和 `configs/`）下执行：
+
+**训练**（训练结束后会自动在 test 集上评估并打印 RMSE/MAE/Pearson r）：
+```bash
+conda activate torch
+cd /path/to/ECG
+python models/train.py --config configs/scheme_a.yaml
+# 或 scheme_b / scheme_c / scheme_d
+```
+
+**仅做测试**（用已有 checkpoint 在 test 集上评估，不训练）：
+```bash
+python models/run_eval.py --config configs/scheme_a.yaml --checkpoint checkpoints/scheme_a/best_model.pt
+```
+
+**检查数据与 shape**：
+```bash
+python models/dataset.py configs/scheme_a.yaml
+```
 
 ## Current Progress (Task 1: Video → ECG)
 
@@ -62,6 +86,7 @@ models/
 ├── dataset.py            # PyTorch Dataset（10s窗口切分、用户级划分、可选IMU/差分帧/1D信号）
 ├── video_ecg_model.py    # 模型定义（A/B/C/D四种架构 + CompositeLoss）
 ├── train.py              # 训练脚本（自动检测CUDA/MPS、early stopping）
+├── run_eval.py           # 仅测试（加载 checkpoint 在 test 集评估）
 └── evaluate.py           # 评估（RMSE, MAE, Pearson r）
 
 configs/
@@ -80,14 +105,7 @@ configs/
 - Scheme C 输入：`(299, 6, 36, 36)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
 - Scheme D 输入：`(300, 3)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
 
-### 训练命令
-
-```bash
-python models/train.py --config configs/scheme_a.yaml
-python models/train.py --config configs/scheme_b.yaml
-python models/train.py --config configs/scheme_c.yaml
-python models/train.py --config configs/scheme_d.yaml  # 推荐先跑这个，最快
-```
+（训练/测试命令见上文「如何开始训练、测试」；推荐先跑 scheme_d 最快。）
 
 ### 待改进
 

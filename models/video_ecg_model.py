@@ -170,6 +170,24 @@ class TemporalShift(nn.Module):
         """x: (B*T, C, H, W) -> (B*T, C, H, W) with temporal shift."""
         BT, C, H, W = x.shape
         T = self.n_segment
+        # #region agent log
+        try:
+            import json, time
+            rem = int(BT % T) if T else None
+            payload = {
+                "sessionId": "debug-session",
+                "runId": "repro",
+                "hypothesisId": "H1",
+                "location": "models/video_ecg_model.py:TemporalShift.forward",
+                "message": "tsm_view_check",
+                "data": {"BT": int(BT), "C": int(C), "H": int(H), "W": int(W), "n_segment": int(T), "BT_mod_n_segment": rem},
+                "timestamp": int(time.time() * 1000),
+            }
+            with open("/home/xinchen/ECG/.cursor/debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        # #endregion
         B = BT // T
         x = x.view(B, T, C, H, W)
         fold = C // 3
@@ -259,6 +277,23 @@ class DualBranchEncoder(nn.Module):
     def forward(self, x):
         """x: (B, T, 6, H, W) -> (B, T, D)"""
         B, T, C, H, W = x.shape
+        # #region agent log
+        try:
+            import json, time
+            payload = {
+                "sessionId": "debug-session",
+                "runId": "repro",
+                "hypothesisId": "H1",
+                "location": "models/video_ecg_model.py:DualBranchEncoder.forward",
+                "message": "dual_branch_input_shape",
+                "data": {"B": int(B), "T": int(T), "C": int(C), "H": int(H), "W": int(W)},
+                "timestamp": int(time.time() * 1000),
+            }
+            with open("/home/xinchen/ECG/.cursor/debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        # #endregion
         diff = x[:, :, :3].reshape(B * T, 3, H, W)
         raw = x[:, :, 3:].reshape(B * T, 3, H, W)
 
@@ -504,6 +539,8 @@ def build_model(cfg):
     model_type = model_cfg.get("type", "video_ecg")
     target_ecg_len = int(data_cfg["window_seconds"] * data_cfg["ecg_sr"])
     n_segment = int(data_cfg["window_seconds"] * data_cfg["video_fps"])
+    if model_type == "mtts_can" and data_cfg.get("use_diff_frames", False):
+        n_segment = n_segment - 1  # diff frames yield T-1 frames per window
 
     # Common IMU parameters (available to all schemes)
     use_imu = data_cfg.get("use_imu", False)

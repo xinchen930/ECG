@@ -1,0 +1,2 @@
+timestamp,scheme_name,config,checkpoint,rmse,mae,pearson_r
+20260204_153644,scheme_a,scheme_a,checkpoints/scheme_a/best_model.pt,0.995390,0.589845,0.021947
