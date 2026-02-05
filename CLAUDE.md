@@ -45,38 +45,41 @@ pip install numpy pandas scipy pyyaml opencv-python-headless torch torchvision
 ```bash
 conda activate torch
 cd /path/to/ECG
-python models/train.py --config configs/scheme_a.yaml
-# 或 scheme_b / scheme_c / scheme_d
+python models/train.py --config configs/scheme_c.yaml
+# 或 scheme_d
 ```
 
 **仅做测试**（用已有 checkpoint 在 test 集上评估，不训练）：
 ```bash
-python models/run_eval.py --config configs/scheme_a.yaml --checkpoint checkpoints/scheme_a/best_model.pt
+python models/run_eval.py --config configs/scheme_c.yaml --checkpoint checkpoints/scheme_c/best_model.pt
 ```
 
 **检查数据与 shape**：
 ```bash
-python models/dataset.py configs/scheme_a.yaml
+python models/dataset.py configs/scheme_c.yaml
 ```
 
 ## Current Progress (Task 1: Video → ECG)
 
 **状态：Phase 1-3 代码已完成，待训练验证。**
 
-已实现四套方案，通过 config 切换。**所有方案均支持可选 IMU 融合**（`use_imu: true`）：
+已实现两套方案（移除了不适合的 ResNet 方案），通过 config 切换。**所有方案均支持可选 IMU 融合**（`use_imu: true`）：
 
-| | Scheme A | Scheme B | Scheme C | Scheme D |
-|---|---|---|---|---|
-| 类型 | Baseline | Enhanced | MTTS-CAN | 1D Signal |
-| 编码器 | ResNet-18 | ResNet-50 | 双分支+TSM | TCN |
-| 输入分辨率 | 64×64 | 224×224 | 36×36 | 1D信号 |
-| 输入形式 | 原始帧 | 帧 | 差分+原始 | RGB均值 |
-| 参数量 (无IMU) | 11.9M | 25.9M | 2.8M | **276K** |
-| 参数量 (有IMU) | 11.9M | 25.9M | 2.9M | **302K** |
-| Batch size | 16 | 8 | 32 | 64 |
-| 配置文件 | `scheme_a.yaml` | `scheme_b.yaml` | `scheme_c.yaml` | `scheme_d.yaml` |
+| | Scheme C | Scheme D |
+|---|---|---|
+| 类型 | MTTS-CAN | 1D Signal |
+| 编码器 | 双分支+TSM+注意力 | TCN (Dilated Conv) |
+| 输入分辨率 | 36×36 | 1D信号 |
+| 输入形式 | 差分帧+原始帧 | RGB均值 |
+| 核心思想 | 差分帧捕捉帧间微小变化 | 直接处理时序信号 |
+| 参数量 (无IMU) | 2.8M | **276K** |
+| 参数量 (有IMU) | 2.9M | **302K** |
+| Batch size | 16 | 64 |
+| 配置文件 | `scheme_c.yaml` | `scheme_d.yaml` |
 
 > 💡 在任意 config 中设置 `data.use_imu: true` 即可启用 IMU 融合
+>
+> ⚠️ Scheme A/B (ResNet) 已移除：ResNet 为图像分类设计，会丢弃 PPG 所需的微小亮度变化信息
 
 ### 已完成文件
 
@@ -84,14 +87,12 @@ python models/dataset.py configs/scheme_a.yaml
 models/
 ├── __init__.py
 ├── dataset.py            # PyTorch Dataset（10s窗口切分、用户级划分、可选IMU/差分帧/1D信号）
-├── video_ecg_model.py    # 模型定义（A/B/C/D四种架构 + CompositeLoss）
+├── video_ecg_model.py    # 模型定义（C/D两种架构 + CompositeLoss）
 ├── train.py              # 训练脚本（自动检测CUDA/MPS、early stopping）
 ├── run_eval.py           # 仅测试（加载 checkpoint 在 test 集评估）
 └── evaluate.py           # 评估（RMSE, MAE, Pearson r）
 
 configs/
-├── scheme_a.yaml         # Baseline (ResNet-18)
-├── scheme_b.yaml         # Enhanced (ResNet-50 + IMU)
 ├── scheme_c.yaml         # MTTS-CAN (差分帧 + 注意力)
 └── scheme_d.yaml         # 1D Signal (TCN, 276K params)
 ```
@@ -100,12 +101,10 @@ configs/
 
 - 98 pairs → 1042 windows（10s窗口，5s步长）
 - 用户级划分：train=882, val=66, test=94 windows
-- Scheme A 输入：`(300, 3, 64, 64)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
-- Scheme B 输入：`(300, 3, 224, 224)` + IMU `(1000, 6)` → 输出 `(2500,)`
 - Scheme C 输入：`(299, 6, 36, 36)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
 - Scheme D 输入：`(300, 3)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
 
-（训练/测试命令见上文「如何开始训练、测试」；推荐先跑 scheme_d 最快。）
+（训练/测试命令见上文「如何开始训练、测试」；推荐先跑 scheme_c。）
 
 ### 待改进
 
@@ -190,9 +189,9 @@ training_data/samples/  # 预处理后的训练样本（98个）
 1. ~~**ECG批量转换**~~：已完成
 2. ~~**时间对齐**~~：已完成
 3. ~~**Phone数据预处理**~~：已完成
-4. ~~**Task 1 代码实现**~~：已完成（Scheme A + B）
-5. **参考开源方案优化模型架构**：待进行
-6. **GPU 服务器上训练验证**：待进行
+4. ~~**Task 1 代码实现**~~：已完成（Scheme C + D）
+5. **GPU 服务器上训练验证 Scheme C/D**：待进行
+6. **引入 PhysNet (3D CNN)**：待实现
 7. **消融实验与对比实验**：待进行
 
 ## Design Principles

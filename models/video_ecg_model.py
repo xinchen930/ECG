@@ -1,10 +1,8 @@
 """
 Video-to-ECG Reconstruction Model.
 
-Scheme A: ResNet-18 (64x64) + 1D Temporal CNN, video only
-Scheme B: ResNet-50 (224x224) + IMU branch + 1D Temporal CNN, composite loss
-Scheme C: MTTS-CAN-inspired dual-branch attention + TSM, lightweight (~1M params)
-Scheme D: 1D Signal-Centric TCN, ultra-lightweight (~100K params)
+Scheme C: MTTS-CAN-inspired dual-branch attention + TSM, lightweight (~2.8M params)
+Scheme D: 1D Signal-Centric TCN, ultra-lightweight (~276K params)
 
 Controlled entirely via config.
 """
@@ -12,30 +10,6 @@ Controlled entirely via config.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.models as models
-
-
-class FrameEncoder(nn.Module):
-    """CNN backbone applied per-frame, outputs (B, T, D)."""
-
-    def __init__(self, backbone="resnet18", pretrained=True):
-        super().__init__()
-        if backbone == "resnet18":
-            net = models.resnet18(weights="IMAGENET1K_V1" if pretrained else None)
-            self.out_dim = 512
-        elif backbone == "resnet50":
-            net = models.resnet50(weights="IMAGENET1K_V1" if pretrained else None)
-            self.out_dim = 2048
-        else:
-            raise ValueError(f"Unsupported backbone: {backbone}")
-        self.backbone = nn.Sequential(*list(net.children())[:-1])  # -> (B, D, 1, 1)
-
-    def forward(self, x):
-        """x: (B, T, C, H, W) -> (B, T, D)"""
-        B, T, C, H, W = x.shape
-        x = x.reshape(B * T, C, H, W)
-        feat = self.backbone(x).squeeze(-1).squeeze(-1)  # (B*T, D)
-        return feat.reshape(B, T, self.out_dim)
 
 
 class IMUEncoder(nn.Module):
@@ -107,52 +81,6 @@ class TemporalDecoder(nn.Module):
             x = F.interpolate(x, size=self.target_ecg_len, mode="linear",
                               align_corners=False)
         return x.squeeze(1)
-
-
-class VideoECGModel(nn.Module):
-    """
-    End-to-end Video (+ optional IMU) -> ECG model.
-    Scheme A: video only.  Scheme B: video + IMU fusion.
-    """
-
-    def __init__(self, backbone="resnet18", pretrained_encoder=True,
-                 temporal_channels=(256, 128, 64), upsample_factor=8,
-                 window_sec=10, video_fps=30, ecg_sr=250,
-                 use_imu=False, imu_dim=64, imu_sr=100):
-        super().__init__()
-        self.use_imu = use_imu
-
-        self.encoder = FrameEncoder(backbone=backbone, pretrained=pretrained_encoder)
-        encoder_dim = self.encoder.out_dim
-
-        decoder_in_dim = encoder_dim
-        if use_imu:
-            video_frames = int(window_sec * video_fps)
-            self.imu_encoder = IMUEncoder(in_channels=6, out_dim=imu_dim,
-                                          target_len=video_frames)
-            decoder_in_dim = encoder_dim + imu_dim
-
-        target_ecg_len = int(window_sec * ecg_sr)
-        self.decoder = TemporalDecoder(
-            in_dim=decoder_in_dim,
-            channels=temporal_channels,
-            upsample_factor=upsample_factor,
-            target_ecg_len=target_ecg_len,
-        )
-
-    def forward(self, video, imu=None):
-        """
-        video: (B, T_v, C, H, W)
-        imu:   (B, T_imu, 6) or None
-        returns: (B, T_ecg)
-        """
-        feat = self.encoder(video)  # (B, T_v, D_enc)
-
-        if self.use_imu and imu is not None:
-            imu_feat = self.imu_encoder(imu)  # (B, T_v, D_imu)
-            feat = torch.cat([feat, imu_feat], dim=-1)  # (B, T_v, D_enc+D_imu)
-
-        return self.decoder(feat)
 
 
 # ──────────────────────────────────────────────
@@ -537,7 +465,7 @@ def build_model(cfg):
     """Build model from config dict."""
     model_cfg = cfg["model"]
     data_cfg = cfg["data"]
-    model_type = model_cfg.get("type", "video_ecg")
+    model_type = model_cfg.get("type", "mtts_can")
     target_ecg_len = int(data_cfg["window_seconds"] * data_cfg["ecg_sr"])
     n_segment = int(data_cfg["window_seconds"] * data_cfg["video_fps"])
     if model_type == "mtts_can" and data_cfg.get("use_diff_frames", False):
@@ -550,7 +478,7 @@ def build_model(cfg):
     window_sec = data_cfg["window_seconds"]
 
     if model_type == "mtts_can":
-        # Scheme C
+        # Scheme C: MTTS-CAN dual-branch + TSM
         model = MTTSCANECGModel(
             n_segment=n_segment,
             channels=tuple(model_cfg["encoder_channels"]),
@@ -564,7 +492,7 @@ def build_model(cfg):
             window_sec=window_sec,
         )
     elif model_type == "signal_1d":
-        # Scheme D
+        # Scheme D: 1D TCN
         model = Signal1DECGModel(
             in_channels=model_cfg.get("in_channels", 3),
             encoder_channels=tuple(model_cfg["encoder_channels"]),
@@ -578,19 +506,7 @@ def build_model(cfg):
             n_segment=n_segment,
         )
     else:
-        # Scheme A/B
-        model = VideoECGModel(
-            backbone=model_cfg.get("encoder", "resnet18"),
-            pretrained_encoder=True,
-            temporal_channels=tuple(model_cfg["temporal_channels"]),
-            upsample_factor=model_cfg["upsample_factor"],
-            window_sec=window_sec,
-            video_fps=data_cfg["video_fps"],
-            ecg_sr=data_cfg["ecg_sr"],
-            use_imu=use_imu,
-            imu_dim=imu_dim,
-            imu_sr=imu_sr,
-        )
+        raise ValueError(f"Unknown model type: {model_type}. Use 'mtts_can' or 'signal_1d'.")
     return model
 
 
@@ -608,22 +524,10 @@ def build_criterion(cfg):
 
 
 if __name__ == "__main__":
-    # Quick test for all schemes
-    print("=== Scheme A (ResNet-18, video only) ===")
-    model_a = VideoECGModel(backbone="resnet18")
-    dummy_v = torch.randn(2, 300, 3, 64, 64)
-    out_a = model_a(dummy_v)
-    print(f"  Input: {dummy_v.shape} -> Output: {out_a.shape}")
-    print(f"  Params: {sum(p.numel() for p in model_a.parameters()):,}")
-
-    print("\n=== Scheme B (ResNet-50, video + IMU) ===")
-    model_b = VideoECGModel(backbone="resnet50", use_imu=True, imu_dim=64)
+    # Quick test for remaining schemes
     dummy_imu = torch.randn(2, 1000, 6)
-    out_b = model_b(dummy_v, dummy_imu)
-    print(f"  Input: video {dummy_v.shape} + imu {dummy_imu.shape} -> Output: {out_b.shape}")
-    print(f"  Params: {sum(p.numel() for p in model_b.parameters()):,}")
 
-    print("\n=== Scheme C (MTTS-CAN dual-branch + TSM) ===")
+    print("=== Scheme C (MTTS-CAN dual-branch + TSM) ===")
     model_c = MTTSCANECGModel(n_segment=300, channels=(32, 64), img_size=36)
     dummy_vc = torch.randn(2, 300, 6, 36, 36)
     out_c = model_c(dummy_vc)
@@ -653,5 +557,5 @@ if __name__ == "__main__":
 
     print("\n=== Composite Loss ===")
     loss_fn = CompositeLoss()
-    loss = loss_fn(out_a, torch.randn_like(out_a))
+    loss = loss_fn(out_c, torch.randn_like(out_c))
     print(f"  Loss: {loss.item():.4f}")
