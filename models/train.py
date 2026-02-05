@@ -105,10 +105,26 @@ def train(cfg):
     )
     scaler = torch.cuda.amp.GradScaler() if use_amp else None
 
-    # Checkpoint dir (per-scheme)
+    # Checkpoint dir: checkpoints/{scheme}/{split}_{quality}_p{patience}/
     scheme_name = cfg.get("scheme_name", "default")
-    save_dir = os.path.join("checkpoints", scheme_name)
+    split_mode = cfg.get("split", {}).get("mode", "user")
+    quality_filter = cfg.get("data", {}).get("quality_filter", "all")
+    if quality_filter is None:
+        quality_filter = "all"
+    else:
+        quality_filter = quality_filter.replace(",", "+")  # "good,moderate" -> "good+moderate"
+    patience = train_cfg.get("patience", 20)
+
+    run_name = f"{split_mode}_{quality_filter}_p{patience}"
+    save_dir = os.path.join("checkpoints", scheme_name, run_name)
     os.makedirs(save_dir, exist_ok=True)
+    print(f"Checkpoint dir: {save_dir}")
+
+    # Save config for reproducibility
+    config_save_path = os.path.join(save_dir, "config.yaml")
+    with open(config_save_path, "w") as f:
+        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+    print(f"Config saved to: {config_save_path}")
 
     best_val_loss = float("inf")
     patience_counter = 0

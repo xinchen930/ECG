@@ -392,15 +392,40 @@ python models/train.py --config configs/scheme_e.yaml --server a6000
 - Early stopping 触发时会保存 best model
 - 训练结束后自动在 test 集评估
 
-### 3. 仅评估（不训练）
+### 3. Checkpoint 保存路径
 
-```bash
-python models/run_eval.py \
-    --config configs/scheme_e.yaml \
-    --checkpoint checkpoints/scheme_e/best_model.pt
+模型保存路径包含关键参数，方便追溯：
+
+```
+checkpoints/{scheme}/{split}_{quality}_p{patience}/
+    ├── best_model.pt        # 最优模型权重
+    ├── config.yaml          # 完整训练配置（可复现）
+    ├── training_history.json # 训练曲线数据
+    └── training_curves.png   # 训练曲线图
 ```
 
-### 4. 评估指标
+**示例**：
+```
+checkpoints/scheme_e/random_good_p15/     # --split random --quality-filter good --patience 15
+checkpoints/scheme_e/user_good+moderate_p20/  # --split user --quality-filter good,moderate --patience 20
+checkpoints/scheme_f/random_all_p30/      # --split random --quality-filter all --patience 30
+```
+
+> 路径命名规则：`{split}_{quality}_p{patience}`
+> - split: `random` 或 `user`
+> - quality: `good`, `good+moderate`, 或 `all`
+> - p{patience}: early stopping 的 patience 值
+
+### 4. 仅评估（不训练）
+
+```bash
+# 指定具体的 checkpoint 路径
+python models/run_eval.py \
+    --config checkpoints/scheme_e/random_good_p15/config.yaml \
+    --checkpoint checkpoints/scheme_e/random_good_p15/best_model.pt
+```
+
+### 5. 评估指标
 
 | 指标 | 含义 | 越小/大越好 |
 |------|------|-------------|
@@ -408,7 +433,7 @@ python models/run_eval.py \
 | MAE | 平均绝对误差 | 越小越好 |
 | Pearson r | 相关系数 | 越大越好 (接近1) |
 
-### 5. 对比实验
+### 6. 对比实验
 
 建议按以下顺序跑，从轻到重（以 3090 为例）：
 
