@@ -1,0 +1,47 @@
+data:
+  ecg_sr: 250
+  img_height: 64
+  img_width: 64
+  num_workers: 8
+  quality_filter: good
+  samples_dir: training_data/samples
+  stride_seconds: 5
+  use_1d_signal: false
+  use_diff_frames: false
+  use_imu: false
+  video_fps: 30
+  window_seconds: 10
+model:
+  base_channels: 32
+  dropout: 0.1
+  in_channels: 3
+  n_blocks: 4
+  type: efficientphys
+scheme_name: scheme_f
+split:
+  mode: random
+  test_users:
+  - lrk
+  - fhy
+  train_users:
+  - fzq
+  - fcy
+  - wjy
+  - czq
+  - syw
+  - wcp
+  val_users:
+  - nxs
+train:
+  alpha_freq: 0.1
+  batch_size: 32
+  beta_pearson: 0.1
+  epochs: 100
+  grad_clip: 1.0
+  gradient_accumulation_steps: 1
+  loss: composite
+  lr: 0.0001
+  patience: 20
+  seed: 42
+  use_amp: false
+  weight_decay: 0.0001

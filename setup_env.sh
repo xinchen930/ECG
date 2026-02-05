@@ -37,8 +37,9 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate ${ENV_NAME}
 
 echo ""
-echo "🔥 Step 3: 安装 PyTorch (CUDA 12.6)..."
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+echo "🔥 Step 3: 安装 PyTorch (Blackwell/SM_100 需用 Nightly + CUDA 12.8)..."
+echo "   若为 Blackwell GPU (RTX 5090/5080 等)，请用 Nightly；否则可改用 cu126 stable。"
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
 echo ""
 echo "📹 Step 4: 安装 OpenCV..."

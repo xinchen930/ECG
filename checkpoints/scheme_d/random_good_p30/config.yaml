@@ -1,0 +1,54 @@
+data:
+  ecg_sr: 250
+  img_height: 64
+  img_width: 64
+  num_workers: 8
+  quality_filter: good
+  samples_dir: training_data/samples
+  stride_seconds: 5
+  use_1d_signal: true
+  use_diff_frames: false
+  use_imu: false
+  video_fps: 30
+  window_seconds: 10
+model:
+  decoder_channels:
+  - 64
+  - 32
+  dropout: 0.1
+  encoder_channels:
+  - 32
+  - 64
+  - 128
+  in_channels: 3
+  kernel_size: 7
+  type: signal_1d
+  upsample_factor: 8
+scheme_name: scheme_d
+split:
+  mode: random
+  test_users:
+  - lrk
+  - fhy
+  train_users:
+  - fzq
+  - fcy
+  - wjy
+  - czq
+  - syw
+  - wcp
+  val_users:
+  - nxs
+train:
+  alpha_freq: 0.1
+  batch_size: 128
+  beta_pearson: 0.1
+  epochs: 200
+  grad_clip: 1.0
+  gradient_accumulation_steps: 1
+  loss: composite
+  lr: 0.001
+  patience: 30
+  seed: 42
+  use_amp: false
+  weight_decay: 0.0001
