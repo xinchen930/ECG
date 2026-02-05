@@ -1,10 +1,15 @@
 """
 Training script for Video-to-ECG reconstruction.
-Supports both Scheme A (video only) and Scheme B (video + IMU, composite loss).
+Supports Schemes C/D/E/F/G with optional IMU fusion and server-specific presets.
 
 Usage:
-    python models/train.py --config configs/scheme_a.yaml
-    python models/train.py --config configs/scheme_b.yaml
+    python models/train.py --config configs/scheme_f.yaml
+    python models/train.py --config configs/scheme_f.yaml --server 3090
+    python models/train.py --config configs/scheme_f.yaml --server a6000
+
+Server presets (--server):
+    3090  : RTX 3090 (24GB) - smaller batch, AMP enabled, gradient accumulation
+    a6000 : NVIDIA A6000 (48GB) - larger batch, no AMP needed
 """
 
 import argparse
@@ -243,12 +248,66 @@ def train(cfg):
     return test_metrics
 
 
+def load_config_with_server_preset(config_path, server=None):
+    """Load config and optionally apply server-specific presets."""
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+
+    if server is None:
+        return cfg
+
+    # Load server presets
+    presets_path = os.path.join(os.path.dirname(config_path), "server_presets.yaml")
+    if not os.path.exists(presets_path):
+        print(f"Warning: server_presets.yaml not found at {presets_path}, using base config")
+        return cfg
+
+    with open(presets_path) as f:
+        presets = yaml.safe_load(f)
+
+    server = server.lower()
+    if server not in presets:
+        print(f"Warning: unknown server '{server}', available: {list(presets.keys())}")
+        return cfg
+
+    scheme_name = cfg.get("scheme_name", "")
+    if scheme_name not in presets[server]:
+        print(f"Warning: no preset for {scheme_name} on {server}, using base config")
+        return cfg
+
+    # Apply server preset overrides to train config
+    server_overrides = presets[server][scheme_name]
+    print(f"Applying server preset: {server} for {scheme_name}")
+    for key, value in server_overrides.items():
+        if key == "num_workers":
+            cfg["data"]["num_workers"] = value
+            print(f"  data.num_workers: {value}")
+        else:
+            old_val = cfg["train"].get(key)
+            cfg["train"][key] = value
+            print(f"  train.{key}: {old_val} -> {value}")
+
+    return cfg
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/scheme_a.yaml")
+    parser = argparse.ArgumentParser(
+        description="Train Video-to-ECG reconstruction models",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python models/train.py --config configs/scheme_f.yaml
+  python models/train.py --config configs/scheme_f.yaml --server 3090
+  python models/train.py --config configs/scheme_f.yaml --server a6000
+        """,
+    )
+    parser.add_argument("--config", default="configs/scheme_c.yaml",
+                        help="Path to config YAML file")
+    parser.add_argument("--server", type=str, default="a6000",
+                        choices=["3090", "a6000"],
+                        help="Server type for automatic parameter tuning (3090 or a6000)")
     args = parser.parse_args()
 
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config_with_server_preset(args.config, args.server)
 
     train(cfg)

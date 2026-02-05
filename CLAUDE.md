@@ -45,8 +45,16 @@ pip install numpy pandas scipy pyyaml opencv-python-headless torch torchvision
 ```bash
 conda activate torch
 cd /path/to/ECG
-python models/train.py --config configs/scheme_c.yaml
-# 或 scheme_d
+
+# 基本用法
+python models/train.py --config configs/scheme_f.yaml
+
+# 指定服务器类型，自动应用最优参数（推荐）
+python models/train.py --config configs/scheme_f.yaml --server 3090
+python models/train.py --config configs/scheme_f.yaml --server a6000
+
+# 指定 GPU 卡
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_f.yaml --server 3090
 ```
 
 **仅做测试**（用已有 checkpoint 在 test 集上评估，不训练）：
@@ -76,6 +84,8 @@ python models/dataset.py configs/scheme_c.yaml
 | 3090可跑 | ⚠️ batch=8 | ✅ | ✅ | ✅ batch=8 | ⚠️ batch=2-4 |
 | 配置文件 | `scheme_c.yaml` | `scheme_d.yaml` | `scheme_e.yaml` | `scheme_f.yaml` | `scheme_g.yaml` |
 
+> 💡 使用 `--server 3090` 或 `--server a6000` 参数自动应用最优训练参数（batch_size、AMP、梯度累积等）
+
 > 💡 在任意 config 中设置 `data.use_imu: true` 即可启用 IMU 融合
 >
 > 💡 Scheme E 使用绿色通道（对血红蛋白最敏感）作为 PPG 信号
@@ -102,7 +112,8 @@ configs/
 ├── scheme_d.yaml         # 1D TCN (RGB均值, 276K)
 ├── scheme_e.yaml         # 1D UNet (绿色通道, ~500K)
 ├── scheme_f.yaml         # EfficientPhys (时空注意力, ~1.5M)
-└── scheme_g.yaml         # PhysNet (3D CNN, ~3-5M)
+├── scheme_g.yaml         # PhysNet (3D CNN, ~3-5M)
+└── server_presets.yaml   # 服务器预设参数 (3090/A6000 自动配置)
 ```
 
 ### 数据管线验证结果

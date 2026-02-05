@@ -1,0 +1,80 @@
+# Server-specific training parameter presets
+# Usage: python models/train.py --config configs/scheme_f.yaml --server 3090
+#
+# These presets override the base config's train parameters based on GPU memory.
+# Main differences: batch_size, gradient_accumulation_steps, use_amp, num_workers
+
+# RTX 3090 (24GB VRAM)
+3090:
+  # Scheme C (MTTS-CAN): ~15GB, moderate batch OK
+  scheme_c:
+    batch_size: 8
+    gradient_accumulation_steps: 4  # effective batch = 32
+    use_amp: true
+    num_workers: 4
+
+  # Scheme D (1D TCN): ~2GB, very lightweight
+  scheme_d:
+    batch_size: 64
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 4
+
+  # Scheme E (1D UNet): ~3GB, lightweight
+  scheme_e:
+    batch_size: 64
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 4
+
+  # Scheme F (EfficientPhys): ~10-15GB
+  scheme_f:
+    batch_size: 8
+    gradient_accumulation_steps: 2  # effective batch = 16
+    use_amp: true
+    num_workers: 4
+
+  # Scheme G (PhysNet): ~20-25GB, may OOM on 3090
+  scheme_g:
+    batch_size: 2
+    gradient_accumulation_steps: 8  # effective batch = 16
+    use_amp: true
+    num_workers: 2  # reduce to save CPU memory
+
+
+# NVIDIA A6000 (48GB VRAM)
+a6000:
+  # Scheme C (MTTS-CAN): plenty of room
+  scheme_c:
+    batch_size: 32
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 8
+
+  # Scheme D (1D TCN): can use very large batch
+  scheme_d:
+    batch_size: 128
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 8
+
+  # Scheme E (1D UNet): can use very large batch
+  scheme_e:
+    batch_size: 128
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 8
+
+  # Scheme F (EfficientPhys): comfortable batch size
+  scheme_f:
+    batch_size: 32
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 8
+
+  # Scheme G (PhysNet): now feasible with good batch
+  scheme_g:
+    batch_size: 16
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 8

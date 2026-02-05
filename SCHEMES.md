@@ -22,116 +22,78 @@
 
 ## GPU 运行指南
 
+### 使用 `--server` 参数（推荐）
+
+通过 `--server` 参数，训练脚本会自动应用对应服务器的最优参数（batch_size、AMP、梯度累积、num_workers），**无需手动修改配置文件**。
+
+```bash
+# 3090 服务器
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_f.yaml --server 3090
+
+# A6000 服务器
+python models/train.py --config configs/scheme_f.yaml --server a6000
+```
+
 ### 3090 (24GB) 运行方案
 
-以下方案可以直接在 3090 上运行：
-
 ```bash
-# 指定卡
-CUDA_VISIBLE_DEVICES=1
+# 推荐：Scheme E（最轻量且原理合理）
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_e.yaml --server 3090
+
+# Scheme F（End-to-end）
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_f.yaml --server 3090
+
+# Scheme C（MTTS-CAN）
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_c.yaml --server 3090
+
+# Scheme D（Baseline，已测试效果差）
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_d.yaml --server 3090
+
+# Scheme G（⚠️ 不推荐，易 OOM，建议用 A6000）
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_g.yaml --server 3090
 ```
-
-#### 1. Scheme E（推荐首选）
-```bash
-# 直接运行，无需修改配置
-python models/train.py --config configs/scheme_e.yaml
-```
-
-#### 2. Scheme D（Baseline，已测试效果差）
-```bash
-# 直接运行，无需修改配置
-python models/train.py --config configs/scheme_d.yaml
-```
-> ⚠️ 此方案之前已测试，效果很差（输出接近直线），仅作为对比 baseline。
-
-#### 3. Scheme F（End-to-end）
-```bash
-# 直接运行（配置已优化为 batch=8）
-python models/train.py --config configs/scheme_f.yaml
-```
-
-#### 4. Scheme C（显存紧张，需修改配置）
-```bash
-# 先修改配置文件 configs/scheme_c.yaml:
-# train:
-#   batch_size: 8              # 从 16 改为 8
-#   use_amp: true              # 启用混合精度
-
-python models/train.py --config configs/scheme_c.yaml
-```
-
-#### 5. Scheme G（不推荐，极易 OOM）
-```bash
-# 必须修改配置文件 configs/scheme_g.yaml:
-# train:
-#   batch_size: 2              # 从 4 改为 2
-#   gradient_accumulation_steps: 8   # 保持有效 batch=16
-#   use_amp: true              # 必须启用
-
-python models/train.py --config configs/scheme_g.yaml
-```
-> ⚠️ 即使修改配置，3090 仍可能 OOM。**强烈建议在 A6000 上运行 Scheme G。**
-
----
 
 ### A6000 (48GB) 运行方案
 
-A6000 可以运行所有方案，以下是最佳配置：
+A6000 可以运行所有方案，使用更大的 batch_size 加速训练：
 
-#### 1. Scheme G（A6000 专属推荐）
 ```bash
-# 修改配置文件 configs/scheme_g.yaml 以充分利用显存:
-# train:
-#   batch_size: 8              # 可以用 8-16
-#   gradient_accumulation_steps: 2   # 有效 batch=16
-#   use_amp: true              # 可选，加速训练
+# Scheme G（A6000 专属推荐，3D CNN）
+python models/train.py --config configs/scheme_g.yaml --server a6000
 
-python models/train.py --config configs/scheme_g.yaml
-```
+# Scheme F（End-to-end，大 batch）
+python models/train.py --config configs/scheme_f.yaml --server a6000
 
-#### 2. Scheme F
-```bash
-# 修改配置文件 configs/scheme_f.yaml:
-# train:
-#   batch_size: 16             # 从 8 改为 16-32
-#   gradient_accumulation_steps: 1
+# Scheme E（轻量方案的上限验证）
+python models/train.py --config configs/scheme_e.yaml --server a6000
 
-python models/train.py --config configs/scheme_f.yaml
-```
+# Scheme C（学术验证过的架构）
+python models/train.py --config configs/scheme_c.yaml --server a6000
 
-#### 3. Scheme C
-```bash
-# 直接运行（默认配置 batch=16 适合 A6000）
-python models/train.py --config configs/scheme_c.yaml
-```
-
-#### 4. Scheme E / D（轻量方案）
-```bash
-# 可以增大 batch_size 加速训练
-# 修改 configs/scheme_e.yaml 或 scheme_d.yaml:
-# train:
-#   batch_size: 128            # 从 64 改为 128
-
-python models/train.py --config configs/scheme_e.yaml
-python models/train.py --config configs/scheme_d.yaml
+# Scheme D（Baseline）
+python models/train.py --config configs/scheme_d.yaml --server a6000
 ```
 
 ---
 
-### 配置修改速查表
+### 服务器预设参数表
 
-| 方案 | GPU | batch_size | grad_accum | use_amp | 有效 batch |
-|------|-----|------------|------------|---------|------------|
-| **C** | 3090 | 8 | 2 | true | 16 |
-| **C** | A6000 | 16 | 1 | false | 16 |
-| **D** | 3090 | 64 | 1 | false | 64 |
-| **D** | A6000 | 128 | 1 | false | 128 |
-| **E** | 3090 | 64 | 1 | false | 64 |
-| **E** | A6000 | 128 | 1 | false | 128 |
-| **F** | 3090 | 8 | 2 | true | 16 |
-| **F** | A6000 | 32 | 1 | false | 32 |
-| **G** | 3090 | 2 | 8 | true | 16 |
-| **G** | A6000 | 8 | 2 | true | 16 |
+`--server` 参数会从 `configs/server_presets.yaml` 加载以下参数覆盖配置：
+
+| 方案 | GPU | batch_size | grad_accum | use_amp | num_workers | 有效 batch |
+|------|-----|------------|------------|---------|-------------|------------|
+| **C** | 3090 | 8 | 4 | true | 4 | 32 |
+| **C** | A6000 | 32 | 1 | false | 8 | 32 |
+| **D** | 3090 | 64 | 1 | false | 4 | 64 |
+| **D** | A6000 | 128 | 1 | false | 8 | 128 |
+| **E** | 3090 | 64 | 1 | false | 4 | 64 |
+| **E** | A6000 | 128 | 1 | false | 8 | 128 |
+| **F** | 3090 | 8 | 2 | true | 4 | 16 |
+| **F** | A6000 | 32 | 1 | false | 8 | 32 |
+| **G** | 3090 | 2 | 8 | true | 2 | 16 |
+| **G** | A6000 | 16 | 1 | false | 8 | 16 |
+
+> 💡 不加 `--server` 参数时使用配置文件的默认值
 
 ---
 
@@ -154,11 +116,11 @@ python models/train.py --config configs/scheme_d.yaml
 
 **运行**：
 ```bash
-# 训练
-python models/train.py --config configs/scheme_c.yaml
+# 3090 服务器
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_c.yaml --server 3090
 
-# 3090 显存不够时，修改 batch_size
-# 编辑 configs/scheme_c.yaml: batch_size: 8, use_amp: true
+# A6000 服务器
+python models/train.py --config configs/scheme_c.yaml --server a6000
 ```
 
 ---
@@ -180,7 +142,11 @@ python models/train.py --config configs/scheme_c.yaml
 
 **运行**：
 ```bash
-python models/train.py --config configs/scheme_d.yaml
+# 3090 服务器
+python models/train.py --config configs/scheme_d.yaml --server 3090
+
+# A6000 服务器
+python models/train.py --config configs/scheme_d.yaml --server a6000
 ```
 
 > ⚠️ **测试结果**：此方案已测试，输出接近直线，无法重建 ECG 波形。保留仅用于消融实验对比。
@@ -203,7 +169,11 @@ python models/train.py --config configs/scheme_d.yaml
 
 **运行**：
 ```bash
-python models/train.py --config configs/scheme_e.yaml
+# 3090 服务器
+python models/train.py --config configs/scheme_e.yaml --server 3090
+
+# A6000 服务器
+python models/train.py --config configs/scheme_e.yaml --server a6000
 ```
 
 **推荐**：轻量且原理合理，建议首选尝试。
@@ -227,10 +197,11 @@ python models/train.py --config configs/scheme_e.yaml
 
 **运行**：
 ```bash
-# 3090
-python models/train.py --config configs/scheme_f.yaml
+# 3090 服务器
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_f.yaml --server 3090
 
-# 如果 OOM，修改 batch_size: 8, gradient_accumulation_steps: 4
+# A6000 服务器
+python models/train.py --config configs/scheme_f.yaml --server a6000
 ```
 
 ---
@@ -252,14 +223,14 @@ python models/train.py --config configs/scheme_f.yaml
 
 **运行**：
 ```bash
-# A6000 推荐
-python models/train.py --config configs/scheme_g.yaml
+# A6000 服务器（推荐）
+python models/train.py --config configs/scheme_g.yaml --server a6000
 
-# 3090 必须用小 batch + AMP
-# 修改: batch_size: 2, gradient_accumulation_steps: 8, use_amp: true
+# 3090 服务器（⚠️ 可能 OOM）
+CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_g.yaml --server 3090
 ```
 
-**注意**：3090 可能 OOM，推荐在 A6000 上跑。
+**注意**：3090 即使使用预设参数仍可能 OOM，推荐在 A6000 上跑。
 
 ---
 
@@ -293,7 +264,11 @@ Sample shapes:
 conda activate torch
 
 # 训练（会自动在 test 集评估）
-python models/train.py --config configs/scheme_e.yaml
+# 3090 服务器
+python models/train.py --config configs/scheme_e.yaml --server 3090
+
+# A6000 服务器
+python models/train.py --config configs/scheme_e.yaml --server a6000
 ```
 
 训练过程会输出：
@@ -319,23 +294,23 @@ python models/run_eval.py \
 
 ### 5. 对比实验
 
-建议按以下顺序跑，从轻到重：
+建议按以下顺序跑，从轻到重（以 3090 为例）：
 
 ```bash
 # 1. 最轻量 baseline
-python models/train.py --config configs/scheme_d.yaml
+python models/train.py --config configs/scheme_d.yaml --server 3090
 
 # 2. 推荐方案
-python models/train.py --config configs/scheme_e.yaml
+python models/train.py --config configs/scheme_e.yaml --server 3090
 
 # 3. End-to-end 方案
-python models/train.py --config configs/scheme_f.yaml
+python models/train.py --config configs/scheme_f.yaml --server 3090
 
 # 4. 学术验证过的架构
-python models/train.py --config configs/scheme_c.yaml
+python models/train.py --config configs/scheme_c.yaml --server 3090
 
-# 5. 3D CNN (A6000)
-python models/train.py --config configs/scheme_g.yaml
+# 5. 3D CNN (建议用 A6000)
+python models/train.py --config configs/scheme_g.yaml --server a6000
 ```
 
 ---
@@ -358,6 +333,9 @@ IMU 数据会在模型的 bottleneck 层与视频特征融合。
 
 ### OOM (显存不足)
 
+**推荐**：使用 `--server 3090` 参数自动应用低显存配置。
+
+手动调整（不推荐）：
 1. 减小 `batch_size`
 2. 增加 `gradient_accumulation_steps` 保持有效 batch 不变
 3. 启用 `use_amp: true` (混合精度)
@@ -378,13 +356,15 @@ train:
 
 ### 3090 跑不了某方案
 
-| 方案 | 3090 建议 |
+使用 `--server 3090` 参数会自动应用以下配置：
+
+| 方案 | 3090 预设 |
 |------|-----------|
-| C | batch=8, use_amp=true |
+| C | batch=8, grad_accum=4, use_amp=true |
 | D | batch=64, 无压力 |
 | E | batch=64, 无压力 |
-| F | batch=8-16, use_amp=true |
-| G | **建议用 A6000**，或 batch=2 |
+| F | batch=8, grad_accum=2, use_amp=true |
+| G | batch=2, grad_accum=8, use_amp=true (**仍建议用 A6000**) |
 
 ---
 
