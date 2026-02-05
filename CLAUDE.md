@@ -63,27 +63,28 @@ python models/dataset.py configs/scheme_c.yaml
 
 **状态：Phase 1-3 代码已完成，待训练验证。**
 
-已实现三套方案（移除了不适合的 ResNet 方案），通过 config 切换。**所有方案均支持可选 IMU 融合**（`use_imu: true`）：
+已实现五套方案（移除了不适合的 ResNet 方案），通过 config 切换。**所有方案均支持可选 IMU 融合**（`use_imu: true`）：
 
-| | Scheme C | Scheme D | Scheme E |
-|---|---|---|---|
-| 类型 | MTTS-CAN | 1D TCN | 1D UNet |
-| 编码器 | 双分支+TSM+注意力 | TCN (Dilated Conv) | UNet编解码器 |
-| 输入分辨率 | 36×36 | 1D信号 | 1D信号 |
-| 输入形式 | 差分帧+原始帧 | RGB均值 | **绿色通道** |
-| 核心思想 | 差分帧捕捉帧间微小变化 | 直接处理时序信号 | 跳跃连接保留细节 |
-| 参数量 (无IMU) | 2.8M | 276K | **~500K** |
-| 参数量 (有IMU) | 2.9M | 302K | ~530K |
-| Batch size | 16 | 64 | 64 |
-| 显存估算 | ~15 GB | ~2 GB | **~3 GB** |
-| 3090可跑 | ⚠️ batch=8 | ✅ | ✅ |
-| 配置文件 | `scheme_c.yaml` | `scheme_d.yaml` | `scheme_e.yaml` |
+| | Scheme C | Scheme D | Scheme E | Scheme F | Scheme G |
+|---|---|---|---|---|---|
+| 类型 | MTTS-CAN | 1D TCN | 1D UNet | EfficientPhys | PhysNet |
+| 架构 | 双分支+TSM | TCN (Dilated) | UNet跳跃连接 | 时空注意力 | 3D CNN |
+| 输入 | 差分帧+原始帧 | RGB均值 | 绿色通道 | 视频帧 | 视频帧 |
+| 分辨率 | 36×36 | 1D | 1D | 64×64 | 64×64 |
+| 参数量 | 2.8M | 276K | ~500K | ~1.5M | ~3-5M |
+| 显存 | ~15 GB | ~2 GB | ~3 GB | ~10-15 GB | ~20-25 GB |
+| 3090可跑 | ⚠️ batch=8 | ✅ | ✅ | ✅ batch=8 | ⚠️ batch=2-4 |
+| 配置文件 | `scheme_c.yaml` | `scheme_d.yaml` | `scheme_e.yaml` | `scheme_f.yaml` | `scheme_g.yaml` |
 
 > 💡 在任意 config 中设置 `data.use_imu: true` 即可启用 IMU 融合
 >
 > 💡 Scheme E 使用绿色通道（对血红蛋白最敏感）作为 PPG 信号
 >
+> 💡 Scheme F/G 是 end-to-end 方案，直接处理视频帧，无需预提取 PPG
+>
 > ⚠️ Scheme A/B (ResNet) 已移除：ResNet 为图像分类设计，会丢弃 PPG 所需的微小亮度变化信息
+>
+> ⚠️ Scheme G (PhysNet) 显存较大，3090 建议使用 A6000
 
 ### 已完成文件
 
@@ -91,26 +92,29 @@ python models/dataset.py configs/scheme_c.yaml
 models/
 ├── __init__.py
 ├── dataset.py            # PyTorch Dataset（10s窗口切分、用户级划分、可选IMU/差分帧/1D信号/绿色通道）
-├── video_ecg_model.py    # 模型定义（C/D/E三种架构 + CompositeLoss）
+├── video_ecg_model.py    # 模型定义（C/D/E/F/G五种架构 + CompositeLoss）
 ├── train.py              # 训练脚本（自动检测CUDA/MPS、early stopping）
 ├── run_eval.py           # 仅测试（加载 checkpoint 在 test 集评估）
 └── evaluate.py           # 评估（RMSE, MAE, Pearson r）
 
 configs/
-├── scheme_c.yaml         # MTTS-CAN (差分帧 + 注意力)
-├── scheme_d.yaml         # 1D Signal (TCN, 276K params)
-└── scheme_e.yaml         # 1D UNet (绿色通道PPG, ~500K params)
+├── scheme_c.yaml         # MTTS-CAN (差分帧 + 注意力, 2.8M)
+├── scheme_d.yaml         # 1D TCN (RGB均值, 276K)
+├── scheme_e.yaml         # 1D UNet (绿色通道, ~500K)
+├── scheme_f.yaml         # EfficientPhys (时空注意力, ~1.5M)
+└── scheme_g.yaml         # PhysNet (3D CNN, ~3-5M)
 ```
 
 ### 数据管线验证结果
 
 - 98 pairs → 1042 windows（10s窗口，5s步长）
 - 用户级划分：train=882, val=66, test=94 windows
-- Scheme C 输入：`(299, 6, 36, 36)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
-- Scheme D 输入：`(300, 3)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
-- Scheme E 输入：`(300, 1)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
+- Scheme C 输入：`(299, 6, 36, 36)` [+ 可选 IMU] → 输出 `(2500,)`
+- Scheme D 输入：`(300, 3)` [+ 可选 IMU] → 输出 `(2500,)`
+- Scheme E 输入：`(300, 1)` [+ 可选 IMU] → 输出 `(2500,)`
+- Scheme F/G 输入：`(300, 3, 64, 64)` [+ 可选 IMU] → 输出 `(2500,)`
 
-（训练/测试命令见上文「如何开始训练、测试」；推荐先跑 scheme_e，最轻量且原理合理。）
+（推荐先跑 scheme_e 或 scheme_f，前者最轻量，后者 end-to-end 效果可能更好。）
 
 ### 待改进
 

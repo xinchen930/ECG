@@ -4,6 +4,8 @@ Video-to-ECG Reconstruction Model.
 Scheme C: MTTS-CAN-inspired dual-branch attention + TSM, lightweight (~2.8M params)
 Scheme D: 1D Signal-Centric TCN, ultra-lightweight (~276K params)
 Scheme E: 1D UNet with skip connections, PPG→ECG (~500K params)
+Scheme F: EfficientPhys temporal-spatial attention, end-to-end (~1.5M params)
+Scheme G: PhysNet 3D CNN, classic rPPG architecture (~3-5M params)
 
 Controlled entirely via config.
 """
@@ -552,6 +554,304 @@ class UNet1DECGModel(nn.Module):
 
 
 # ──────────────────────────────────────────────
+#  Scheme F: EfficientPhys (Temporal-Spatial Attention)
+# ──────────────────────────────────────────────
+
+class TemporalDifferenceConv(nn.Module):
+    """Temporal difference convolution for motion enhancement."""
+
+    def __init__(self, in_channels, out_channels, kernel_size=3):
+        super().__init__()
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=(3, kernel_size, kernel_size),
+                              padding=(1, kernel_size // 2, kernel_size // 2))
+        self.bn = nn.BatchNorm3d(out_channels)
+
+    def forward(self, x):
+        # x: (B, C, T, H, W)
+        # Compute temporal difference
+        diff = torch.zeros_like(x)
+        diff[:, :, 1:] = x[:, :, 1:] - x[:, :, :-1]
+        # Concat original and difference
+        x = x + diff  # Enhanced with motion information
+        return F.relu(self.bn(self.conv(x)))
+
+
+class SpatialAttention(nn.Module):
+    """Spatial attention module for focusing on skin regions."""
+
+    def __init__(self, in_channels):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, 1, kernel_size=1)
+
+    def forward(self, x):
+        # x: (B, C, H, W)
+        attn = torch.sigmoid(self.conv(x))  # (B, 1, H, W)
+        return x * attn
+
+
+class EfficientPhysBlock(nn.Module):
+    """EfficientPhys-inspired block with temporal-spatial processing."""
+
+    def __init__(self, in_channels, out_channels, kernel_size=3):
+        super().__init__()
+        self.temporal_conv = nn.Conv3d(in_channels, out_channels,
+                                       kernel_size=(3, 1, 1), padding=(1, 0, 0))
+        self.spatial_conv = nn.Conv3d(out_channels, out_channels,
+                                      kernel_size=(1, kernel_size, kernel_size),
+                                      padding=(0, kernel_size // 2, kernel_size // 2))
+        self.bn1 = nn.BatchNorm3d(out_channels)
+        self.bn2 = nn.BatchNorm3d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.spatial_attn = SpatialAttention(out_channels)
+
+    def forward(self, x):
+        # x: (B, C, T, H, W)
+        x = self.relu(self.bn1(self.temporal_conv(x)))
+        x = self.relu(self.bn2(self.spatial_conv(x)))
+
+        # Apply spatial attention per frame
+        B, C, T, H, W = x.shape
+        x = x.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W)
+        x = self.spatial_attn(x)
+        x = x.reshape(B, T, C, H, W).permute(0, 2, 1, 3, 4)
+        return x
+
+
+class EfficientPhysECGModel(nn.Module):
+    """
+    Scheme F: EfficientPhys-inspired model for Video → ECG.
+
+    Uses temporal-spatial factorized convolutions with spatial attention
+    to efficiently process video frames and extract PPG/ECG signals.
+
+    Input: (B, T, C, H, W) - video frames
+    Output: (B, T_ecg) - reconstructed ECG waveform
+
+    Key features:
+    - Temporal-spatial factorization reduces computation
+    - Spatial attention focuses on skin ROI
+    - End-to-end trainable
+
+    ~1.5M params, 3090 can run with batch=8-16
+    """
+
+    def __init__(self, in_channels=3, base_channels=32, n_blocks=4,
+                 img_size=64, n_segment=300, target_ecg_len=2500,
+                 dropout=0.1, use_imu=False, imu_dim=32):
+        super().__init__()
+        self.use_imu = use_imu
+        self.n_segment = n_segment
+        self.target_ecg_len = target_ecg_len
+
+        # Initial conv with temporal difference enhancement
+        self.stem = TemporalDifferenceConv(in_channels, base_channels, kernel_size=3)
+        self.pool1 = nn.MaxPool3d((1, 2, 2))
+
+        # EfficientPhys blocks with progressive channel expansion
+        self.blocks = nn.ModuleList()
+        self.pools = nn.ModuleList()
+        ch = base_channels
+        for i in range(n_blocks):
+            out_ch = min(ch * 2, 256)
+            self.blocks.append(EfficientPhysBlock(ch, out_ch))
+            self.pools.append(nn.MaxPool3d((1, 2, 2)))
+            ch = out_ch
+
+        # Global spatial pooling
+        self.global_pool = nn.AdaptiveAvgPool3d((None, 1, 1))
+
+        # Temporal modeling
+        self.temporal_conv = nn.Sequential(
+            nn.Conv1d(ch, ch // 2, kernel_size=5, padding=2),
+            nn.BatchNorm1d(ch // 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Conv1d(ch // 2, ch // 4, kernel_size=5, padding=2),
+            nn.BatchNorm1d(ch // 4),
+            nn.ReLU(inplace=True),
+        )
+
+        decoder_in = ch // 4
+        if use_imu:
+            self.imu_encoder = IMUEncoder(in_channels=6, out_dim=imu_dim, target_len=n_segment)
+            decoder_in += imu_dim
+
+        # Output head
+        self.head = nn.Conv1d(decoder_in, 1, kernel_size=1)
+
+    def forward(self, video, imu=None):
+        """
+        video: (B, T, C, H, W) - video frames
+        imu: (B, T_imu, 6) or None
+        returns: (B, T_ecg)
+        """
+        # Reshape to (B, C, T, H, W) for 3D conv
+        x = video.permute(0, 2, 1, 3, 4)
+
+        # Stem + initial pooling
+        x = self.stem(x)
+        x = self.pool1(x)
+
+        # EfficientPhys blocks
+        for block, pool in zip(self.blocks, self.pools):
+            x = block(x)
+            x = pool(x)
+
+        # Global spatial pooling -> (B, C, T, 1, 1)
+        x = self.global_pool(x)
+        x = x.squeeze(-1).squeeze(-1)  # (B, C, T)
+
+        # Temporal modeling
+        x = self.temporal_conv(x)  # (B, C', T)
+
+        # IMU fusion
+        if self.use_imu and imu is not None:
+            imu_feat = self.imu_encoder(imu)  # (B, T, D_imu)
+            imu_feat = imu_feat.permute(0, 2, 1)  # (B, D_imu, T)
+            if imu_feat.shape[-1] != x.shape[-1]:
+                imu_feat = F.interpolate(imu_feat, size=x.shape[-1], mode='linear', align_corners=False)
+            x = torch.cat([x, imu_feat], dim=1)
+
+        # Output
+        x = self.head(x)  # (B, 1, T)
+
+        # Interpolate to target ECG length
+        if x.shape[-1] != self.target_ecg_len:
+            x = F.interpolate(x, size=self.target_ecg_len, mode='linear', align_corners=False)
+
+        return x.squeeze(1)
+
+
+# ──────────────────────────────────────────────
+#  Scheme G: PhysNet (3D CNN)
+# ──────────────────────────────────────────────
+
+class PhysNetBlock(nn.Module):
+    """PhysNet 3D convolutional block."""
+
+    def __init__(self, in_channels, out_channels, kernel_size=3):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv1 = nn.Conv3d(in_channels, out_channels, kernel_size,
+                               padding=padding)
+        self.conv2 = nn.Conv3d(out_channels, out_channels, kernel_size,
+                               padding=padding)
+        self.bn1 = nn.BatchNorm3d(out_channels)
+        self.bn2 = nn.BatchNorm3d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+        # Residual connection
+        self.residual = nn.Conv3d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
+
+    def forward(self, x):
+        res = self.residual(x)
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.bn2(self.conv2(x))
+        return self.relu(x + res)
+
+
+class PhysNetECGModel(nn.Module):
+    """
+    Scheme G: PhysNet-inspired 3D CNN for Video → ECG.
+
+    Classic 3D CNN architecture for rPPG extraction, adapted for ECG reconstruction.
+    Processes video as a spatiotemporal volume.
+
+    Input: (B, T, C, H, W) - video frames
+    Output: (B, T_ecg) - reconstructed ECG waveform
+
+    Key features:
+    - 3D convolutions capture spatiotemporal patterns
+    - Progressive spatial downsampling
+    - Residual connections for gradient flow
+
+    ~3-5M params, requires A6000 for comfortable training (batch=4-8)
+    3090 can run with batch=2, use_amp=True
+    """
+
+    def __init__(self, in_channels=3, base_channels=32, n_blocks=4,
+                 n_segment=300, target_ecg_len=2500, dropout=0.1,
+                 use_imu=False, imu_dim=32):
+        super().__init__()
+        self.use_imu = use_imu
+        self.n_segment = n_segment
+        self.target_ecg_len = target_ecg_len
+
+        # Encoder: progressive spatial downsampling
+        self.encoder_blocks = nn.ModuleList()
+        self.spatial_pools = nn.ModuleList()
+
+        ch = in_channels
+        for i in range(n_blocks):
+            out_ch = base_channels * (2 ** min(i, 3))  # Cap at 256
+            self.encoder_blocks.append(PhysNetBlock(ch, out_ch))
+            # Only pool spatially, preserve temporal dimension
+            self.spatial_pools.append(nn.MaxPool3d((1, 2, 2)))
+            ch = out_ch
+
+        # Global spatial pooling
+        self.global_pool = nn.AdaptiveAvgPool3d((None, 1, 1))
+
+        # Temporal decoder
+        self.temporal_decoder = nn.Sequential(
+            nn.Conv1d(ch, ch // 2, kernel_size=5, padding=2),
+            nn.BatchNorm1d(ch // 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Conv1d(ch // 2, ch // 4, kernel_size=5, padding=2),
+            nn.BatchNorm1d(ch // 4),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+
+        decoder_out = ch // 4
+        if use_imu:
+            self.imu_encoder = IMUEncoder(in_channels=6, out_dim=imu_dim, target_len=n_segment)
+            decoder_out += imu_dim
+
+        # Output head
+        self.head = nn.Conv1d(decoder_out, 1, kernel_size=1)
+
+    def forward(self, video, imu=None):
+        """
+        video: (B, T, C, H, W) - video frames
+        imu: (B, T_imu, 6) or None
+        returns: (B, T_ecg)
+        """
+        # Reshape to (B, C, T, H, W) for 3D conv
+        x = video.permute(0, 2, 1, 3, 4)
+
+        # Encoder
+        for block, pool in zip(self.encoder_blocks, self.spatial_pools):
+            x = block(x)
+            x = pool(x)
+
+        # Global spatial pooling -> (B, C, T, 1, 1)
+        x = self.global_pool(x)
+        x = x.squeeze(-1).squeeze(-1)  # (B, C, T)
+
+        # Temporal decoder
+        x = self.temporal_decoder(x)  # (B, C', T)
+
+        # IMU fusion
+        if self.use_imu and imu is not None:
+            imu_feat = self.imu_encoder(imu)  # (B, T, D_imu)
+            imu_feat = imu_feat.permute(0, 2, 1)  # (B, D_imu, T)
+            if imu_feat.shape[-1] != x.shape[-1]:
+                imu_feat = F.interpolate(imu_feat, size=x.shape[-1], mode='linear', align_corners=False)
+            x = torch.cat([x, imu_feat], dim=1)
+
+        # Output
+        x = self.head(x)  # (B, 1, T)
+
+        # Interpolate to target ECG length
+        if x.shape[-1] != self.target_ecg_len:
+            x = F.interpolate(x, size=self.target_ecg_len, mode='linear', align_corners=False)
+
+        return x.squeeze(1)
+
+
+# ──────────────────────────────────────────────
 #  Composite Loss
 # ──────────────────────────────────────────────
 
@@ -651,8 +951,33 @@ def build_model(cfg):
             imu_dim=imu_dim,
             n_segment=n_segment,
         )
+    elif model_type == "efficientphys":
+        # Scheme F: EfficientPhys
+        model = EfficientPhysECGModel(
+            in_channels=model_cfg.get("in_channels", 3),
+            base_channels=model_cfg.get("base_channels", 32),
+            n_blocks=model_cfg.get("n_blocks", 4),
+            img_size=data_cfg["img_height"],
+            n_segment=n_segment,
+            target_ecg_len=target_ecg_len,
+            dropout=model_cfg.get("dropout", 0.1),
+            use_imu=use_imu,
+            imu_dim=imu_dim,
+        )
+    elif model_type == "physnet":
+        # Scheme G: PhysNet
+        model = PhysNetECGModel(
+            in_channels=model_cfg.get("in_channels", 3),
+            base_channels=model_cfg.get("base_channels", 32),
+            n_blocks=model_cfg.get("n_blocks", 4),
+            n_segment=n_segment,
+            target_ecg_len=target_ecg_len,
+            dropout=model_cfg.get("dropout", 0.1),
+            use_imu=use_imu,
+            imu_dim=imu_dim,
+        )
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Use 'mtts_can', 'signal_1d', or 'unet_1d'.")
+        raise ValueError(f"Unknown model type: {model_type}. Use 'mtts_can', 'signal_1d', 'unet_1d', 'efficientphys', or 'physnet'.")
     return model
 
 
@@ -713,6 +1038,19 @@ if __name__ == "__main__":
     out_e_imu = model_e_imu(dummy_ppg, dummy_imu)
     print(f"  Input: ppg {dummy_ppg.shape} + imu {dummy_imu.shape} -> Output: {out_e_imu.shape}")
     print(f"  Params: {sum(p.numel() for p in model_e_imu.parameters()):,}")
+
+    print("\n=== Scheme F (EfficientPhys) ===")
+    model_f = EfficientPhysECGModel(in_channels=3, base_channels=32, n_blocks=4, img_size=64)
+    dummy_video = torch.randn(2, 300, 3, 64, 64)  # (B, T, C, H, W)
+    out_f = model_f(dummy_video)
+    print(f"  Input: {dummy_video.shape} -> Output: {out_f.shape}")
+    print(f"  Params: {sum(p.numel() for p in model_f.parameters()):,}")
+
+    print("\n=== Scheme G (PhysNet 3D CNN) ===")
+    model_g = PhysNetECGModel(in_channels=3, base_channels=32, n_blocks=4)
+    out_g = model_g(dummy_video)
+    print(f"  Input: {dummy_video.shape} -> Output: {out_g.shape}")
+    print(f"  Params: {sum(p.numel() for p in model_g.parameters()):,}")
 
     print("\n=== Composite Loss ===")
     loss_fn = CompositeLoss()

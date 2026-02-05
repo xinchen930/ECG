@@ -1,0 +1,44 @@
+# Scheme G: PhysNet - 3D CNN for Video → ECG
+# Classic 3D CNN architecture adapted for ECG reconstruction
+# 3090 (24GB): ⚠️ batch=2-4 with AMP (may OOM, recommend A6000)
+# A6000 (48GB): ✅ batch=8-16
+scheme_name: scheme_g
+
+data:
+  samples_dir: training_data/samples
+  window_seconds: 10
+  stride_seconds: 5
+  video_fps: 30
+  ecg_sr: 250
+  img_height: 64
+  img_width: 64
+  use_imu: false
+  use_diff_frames: false
+  use_1d_signal: false
+  num_workers: 4
+
+split:
+  train_users: [fzq, fcy, wjy, czq, syw, wcp]
+  val_users: [nxs]
+  test_users: [lrk, fhy]
+
+model:
+  type: physnet
+  in_channels: 3
+  base_channels: 32
+  n_blocks: 4
+  dropout: 0.1
+
+train:
+  epochs: 100
+  batch_size: 4             # 3090: 2-4, A6000: 8-16
+  gradient_accumulation_steps: 4  # Effective batch = 16
+  use_amp: true             # REQUIRED for 3090
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  patience: 20
+  grad_clip: 1.0
+  seed: 42
+  loss: composite
+  alpha_freq: 0.1
+  beta_pearson: 0.1
