@@ -4,11 +4,49 @@
 
 ---
 
+## 环境安装
+
+### 方式一：Conda（推荐）
+
+```bash
+# 创建新环境
+conda env create -f environment.yaml
+
+# 激活环境
+conda activate ecg
+```
+
+### 方式二：pip
+
+```bash
+# 创建虚拟环境
+python -m venv venv
+source venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 单独安装 PyTorch (根据 GPU 选择 CUDA 版本)
+# Blackwell (RTX PRO 6000 等) 需要 CUDA 12.6:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+
+# Ampere/Hopper (A6000, 3090 等) 用 CUDA 12.1:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
+
+### 验证安装
+
+```bash
+python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
+```
+
+---
+
 ## 快速开始
 
 ```bash
 # 推荐的第一次运行命令（随机划分 + 好数据 + 适中参数）
-python models/train.py --config configs/scheme_e.yaml \
+CUDA_VISIBLE_DEVICES=0 python models/train.py --config configs/scheme_e.yaml \
     --split random \
     --quality-filter good \
     --patience 15 \

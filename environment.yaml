@@ -1,0 +1,51 @@
+# Conda environment for Video-to-ECG reconstruction
+#
+# 创建环境:
+#   conda env create -f environment.yaml
+#
+# 激活环境:
+#   conda activate ecg
+#
+# 更新环境:
+#   conda env update -f environment.yaml --prune
+
+name: ecg
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python
+  - python=3.10
+
+  # PyTorch with CUDA 12.6 (支持 Blackwell 架构)
+  - pytorch>=2.5
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.6
+
+  # 数据处理
+  - numpy
+  - pandas
+  - scipy
+
+  # 视频处理
+  - opencv
+
+  # 可视化
+  - matplotlib
+
+  # 配置文件
+  - pyyaml
+
+  # Jupyter (可选，用于 notebook)
+  - jupyter
+  - ipykernel
+
+  # pip 安装的包
+  - pip
+  - pip:
+    # 如果 conda 安装 opencv 有问题，用 pip
+    - opencv-python-headless
