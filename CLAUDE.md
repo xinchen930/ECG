@@ -116,6 +116,8 @@ configs/
 
 （推荐先跑 scheme_e 或 scheme_f，前者最轻量，后者 end-to-end 效果可能更好。）
 
+> 📖 **详细文档**：各方案原理、配置说明、验证步骤见 [SCHEMES.md](SCHEMES.md)
+
 ### 待改进
 
 - 模型架构可参考开源 PPG→ECG / Video→PPG 论文方案优化
