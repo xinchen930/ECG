@@ -3,6 +3,7 @@ Video-to-ECG Reconstruction Model.
 
 Scheme C: MTTS-CAN-inspired dual-branch attention + TSM, lightweight (~2.8M params)
 Scheme D: 1D Signal-Centric TCN, ultra-lightweight (~276K params)
+Scheme E: 1D UNet with skip connections, PPG→ECG (~500K params)
 
 Controlled entirely via config.
 """
@@ -419,7 +420,139 @@ class Signal1DECGModel(nn.Module):
 
 
 # ──────────────────────────────────────────────
-#  Composite Loss (Scheme B/C/D)
+#  Scheme E: 1D UNet (PPG → ECG)
+# ──────────────────────────────────────────────
+
+class UNet1DBlock(nn.Module):
+    """1D UNet encoder/decoder block: Conv + BN + ReLU + Conv + BN + ReLU."""
+
+    def __init__(self, in_ch, out_ch, kernel_size=7, dropout=0.1):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv1 = nn.Conv1d(in_ch, out_ch, kernel_size, padding=padding)
+        self.bn1 = nn.BatchNorm1d(out_ch)
+        self.conv2 = nn.Conv1d(out_ch, out_ch, kernel_size, padding=padding)
+        self.bn2 = nn.BatchNorm1d(out_ch)
+        self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn2(self.conv2(x)))
+        return x
+
+
+class UNet1DECGModel(nn.Module):
+    """
+    Scheme E: 1D UNet for PPG → ECG reconstruction.
+
+    Uses encoder-decoder architecture with skip connections to preserve
+    fine-grained temporal details essential for ECG waveform reconstruction.
+
+    Input: (B, T_v, C_in) - PPG signal (green channel or RGB means)
+    Output: (B, T_ecg) - reconstructed ECG waveform
+
+    Key features:
+    - Skip connections preserve low-level signal details
+    - Multi-scale feature extraction via pooling
+    - Lightweight (~500K params)
+    """
+
+    def __init__(self, in_channels=1, base_channels=32, depth=4,
+                 kernel_size=7, target_ecg_len=2500, dropout=0.1,
+                 use_imu=False, imu_dim=32, n_segment=300):
+        super().__init__()
+        self.use_imu = use_imu
+        self.n_segment = n_segment
+        self.target_ecg_len = target_ecg_len
+        self.depth = depth
+
+        # Encoder path
+        self.encoders = nn.ModuleList()
+        self.pools = nn.ModuleList()
+
+        ch = in_channels
+        for i in range(depth):
+            out_ch = base_channels * (2 ** i)
+            self.encoders.append(UNet1DBlock(ch, out_ch, kernel_size, dropout))
+            self.pools.append(nn.MaxPool1d(2))
+            ch = out_ch
+
+        # Bottleneck
+        bottleneck_ch = base_channels * (2 ** depth)
+        self.bottleneck = UNet1DBlock(ch, bottleneck_ch, kernel_size, dropout)
+
+        # IMU fusion at bottleneck
+        if use_imu:
+            self.imu_encoder = IMUEncoder(in_channels=6, out_dim=imu_dim, target_len=n_segment)
+            # IMU features will be added after interpolation
+            self.imu_proj = nn.Conv1d(imu_dim, bottleneck_ch, 1)
+
+        # Decoder path
+        self.decoders = nn.ModuleList()
+        self.upconvs = nn.ModuleList()
+
+        ch = bottleneck_ch
+        for i in range(depth - 1, -1, -1):
+            out_ch = base_channels * (2 ** i)
+            self.upconvs.append(nn.ConvTranspose1d(ch, out_ch, 4, stride=2, padding=1))
+            # After concat with skip connection, input channels double
+            self.decoders.append(UNet1DBlock(out_ch * 2, out_ch, kernel_size, dropout))
+            ch = out_ch
+
+        # Output head
+        self.head = nn.Conv1d(base_channels, 1, kernel_size=1)
+
+    def forward(self, signal, imu=None):
+        """
+        signal: (B, T_v, C_in) - PPG signal
+        imu: (B, T_imu, 6) or None
+        returns: (B, T_ecg)
+        """
+        x = signal.permute(0, 2, 1)  # (B, C_in, T_v)
+
+        # Encoder path with skip connections
+        skips = []
+        for encoder, pool in zip(self.encoders, self.pools):
+            x = encoder(x)
+            skips.append(x)
+            x = pool(x)
+
+        # Bottleneck
+        x = self.bottleneck(x)
+
+        # IMU fusion at bottleneck
+        if self.use_imu and imu is not None:
+            imu_feat = self.imu_encoder(imu)  # (B, T_v, D_imu)
+            imu_feat = imu_feat.permute(0, 2, 1)  # (B, D_imu, T_v)
+            # Interpolate IMU features to match bottleneck size
+            imu_feat = F.interpolate(imu_feat, size=x.shape[-1], mode='linear', align_corners=False)
+            imu_feat = self.imu_proj(imu_feat)  # (B, bottleneck_ch, T)
+            x = x + imu_feat
+
+        # Decoder path with skip connections
+        for i, (upconv, decoder) in enumerate(zip(self.upconvs, self.decoders)):
+            x = upconv(x)
+            skip = skips[-(i + 1)]
+            # Handle size mismatch due to pooling
+            if x.shape[-1] != skip.shape[-1]:
+                x = F.interpolate(x, size=skip.shape[-1], mode='linear', align_corners=False)
+            x = torch.cat([x, skip], dim=1)
+            x = decoder(x)
+
+        # Output
+        x = self.head(x)  # (B, 1, T)
+
+        # Interpolate to target ECG length
+        if x.shape[-1] != self.target_ecg_len:
+            x = F.interpolate(x, size=self.target_ecg_len, mode='linear', align_corners=False)
+
+        return x.squeeze(1)
+
+
+# ──────────────────────────────────────────────
+#  Composite Loss
 # ──────────────────────────────────────────────
 
 class CompositeLoss(nn.Module):
@@ -505,8 +638,21 @@ def build_model(cfg):
             imu_dim=imu_dim,
             n_segment=n_segment,
         )
+    elif model_type == "unet_1d":
+        # Scheme E: 1D UNet
+        model = UNet1DECGModel(
+            in_channels=model_cfg.get("in_channels", 1),
+            base_channels=model_cfg.get("base_channels", 32),
+            depth=model_cfg.get("depth", 4),
+            kernel_size=model_cfg.get("kernel_size", 7),
+            target_ecg_len=target_ecg_len,
+            dropout=model_cfg.get("dropout", 0.1),
+            use_imu=use_imu,
+            imu_dim=imu_dim,
+            n_segment=n_segment,
+        )
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Use 'mtts_can' or 'signal_1d'.")
+        raise ValueError(f"Unknown model type: {model_type}. Use 'mtts_can', 'signal_1d', or 'unet_1d'.")
     return model
 
 
@@ -554,6 +700,19 @@ if __name__ == "__main__":
     out_d_imu = model_d_imu(dummy_sig, dummy_imu)
     print(f"  Input: signal {dummy_sig.shape} + imu {dummy_imu.shape} -> Output: {out_d_imu.shape}")
     print(f"  Params: {sum(p.numel() for p in model_d_imu.parameters()):,}")
+
+    print("\n=== Scheme E (1D UNet) ===")
+    model_e = UNet1DECGModel(in_channels=1, base_channels=32, depth=4)
+    dummy_ppg = torch.randn(2, 300, 1)  # (B, T, 1) - green channel PPG
+    out_e = model_e(dummy_ppg)
+    print(f"  Input: {dummy_ppg.shape} -> Output: {out_e.shape}")
+    print(f"  Params: {sum(p.numel() for p in model_e.parameters()):,}")
+
+    print("\n=== Scheme E + IMU ===")
+    model_e_imu = UNet1DECGModel(in_channels=1, base_channels=32, depth=4, use_imu=True, imu_dim=32)
+    out_e_imu = model_e_imu(dummy_ppg, dummy_imu)
+    print(f"  Input: ppg {dummy_ppg.shape} + imu {dummy_imu.shape} -> Output: {out_e_imu.shape}")
+    print(f"  Params: {sum(p.numel() for p in model_e_imu.parameters()):,}")
 
     print("\n=== Composite Loss ===")
     loss_fn = CompositeLoss()

@@ -91,7 +91,7 @@ class VideoECGDataset(Dataset):
     def __init__(self, records, window_index, img_h=64, img_w=64,
                  ecg_col="ecg_counts_filt_monitor", normalize_ecg=True,
                  use_imu=False, imu_sr=100, window_sec=10,
-                 use_diff_frames=False, use_1d_signal=False):
+                 use_diff_frames=False, use_1d_signal=False, use_green_channel=False):
         self.records = records
         self.window_index = window_index
         self.img_h = img_h
@@ -103,6 +103,7 @@ class VideoECGDataset(Dataset):
         self.window_sec = window_sec
         self.use_diff_frames = use_diff_frames
         self.use_1d_signal = use_1d_signal
+        self.use_green_channel = use_green_channel
         self.imu_window_len = int(imu_sr * window_sec)
 
         # Pre-load ECG data for all referenced pairs
@@ -160,9 +161,16 @@ class VideoECGDataset(Dataset):
         video = np.stack(frames).astype(np.float32) / 255.0  # (T, H, W, 3)
 
         if self.use_1d_signal:
-            # Extract per-frame ROI statistics: mean of each RGB channel
-            # video: (T, H, W, 3) -> signal: (T, 3)
-            signal = video.mean(axis=(1, 2))  # (T, 3) - RGB means per frame
+            # Extract per-frame ROI statistics
+            # video: (T, H, W, 3) in BGR format (OpenCV default)
+            if self.use_green_channel:
+                # Green channel (index 1 in BGR) is most sensitive to blood hemoglobin
+                # video: (T, H, W, 3) -> signal: (T, 1)
+                signal = video[:, :, :, 1:2].mean(axis=(1, 2))  # (T, 1) - green channel mean
+            else:
+                # Use all RGB channels
+                # video: (T, H, W, 3) -> signal: (T, 3)
+                signal = video.mean(axis=(1, 2))  # (T, 3) - RGB means per frame
             # Z-normalize per channel
             signal_mean = signal.mean(axis=0, keepdims=True)
             signal_std = signal.std(axis=0, keepdims=True) + 1e-8
@@ -263,6 +271,7 @@ def create_datasets(cfg):
     imu_sr = data_cfg.get("imu_sr", 100)
     use_diff_frames = data_cfg.get("use_diff_frames", False)
     use_1d_signal = data_cfg.get("use_1d_signal", False)
+    use_green_channel = data_cfg.get("use_green_channel", False)
 
     kwargs = dict(
         img_h=data_cfg["img_height"],
@@ -272,6 +281,7 @@ def create_datasets(cfg):
         window_sec=data_cfg["window_seconds"],
         use_diff_frames=use_diff_frames,
         use_1d_signal=use_1d_signal,
+        use_green_channel=use_green_channel,
     )
 
     train_ds = VideoECGDataset(records, train_index, **kwargs)
@@ -284,7 +294,7 @@ def create_datasets(cfg):
 if __name__ == "__main__":
     import yaml
     import sys
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/scheme_a.yaml"
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/scheme_c.yaml"
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
     train_ds, val_ds, test_ds = create_datasets(cfg)

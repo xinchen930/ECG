@@ -63,21 +63,25 @@ python models/dataset.py configs/scheme_c.yaml
 
 **状态：Phase 1-3 代码已完成，待训练验证。**
 
-已实现两套方案（移除了不适合的 ResNet 方案），通过 config 切换。**所有方案均支持可选 IMU 融合**（`use_imu: true`）：
+已实现三套方案（移除了不适合的 ResNet 方案），通过 config 切换。**所有方案均支持可选 IMU 融合**（`use_imu: true`）：
 
-| | Scheme C | Scheme D |
-|---|---|---|
-| 类型 | MTTS-CAN | 1D Signal |
-| 编码器 | 双分支+TSM+注意力 | TCN (Dilated Conv) |
-| 输入分辨率 | 36×36 | 1D信号 |
-| 输入形式 | 差分帧+原始帧 | RGB均值 |
-| 核心思想 | 差分帧捕捉帧间微小变化 | 直接处理时序信号 |
-| 参数量 (无IMU) | 2.8M | **276K** |
-| 参数量 (有IMU) | 2.9M | **302K** |
-| Batch size | 16 | 64 |
-| 配置文件 | `scheme_c.yaml` | `scheme_d.yaml` |
+| | Scheme C | Scheme D | Scheme E |
+|---|---|---|---|
+| 类型 | MTTS-CAN | 1D TCN | 1D UNet |
+| 编码器 | 双分支+TSM+注意力 | TCN (Dilated Conv) | UNet编解码器 |
+| 输入分辨率 | 36×36 | 1D信号 | 1D信号 |
+| 输入形式 | 差分帧+原始帧 | RGB均值 | **绿色通道** |
+| 核心思想 | 差分帧捕捉帧间微小变化 | 直接处理时序信号 | 跳跃连接保留细节 |
+| 参数量 (无IMU) | 2.8M | 276K | **~500K** |
+| 参数量 (有IMU) | 2.9M | 302K | ~530K |
+| Batch size | 16 | 64 | 64 |
+| 显存估算 | ~15 GB | ~2 GB | **~3 GB** |
+| 3090可跑 | ⚠️ batch=8 | ✅ | ✅ |
+| 配置文件 | `scheme_c.yaml` | `scheme_d.yaml` | `scheme_e.yaml` |
 
 > 💡 在任意 config 中设置 `data.use_imu: true` 即可启用 IMU 融合
+>
+> 💡 Scheme E 使用绿色通道（对血红蛋白最敏感）作为 PPG 信号
 >
 > ⚠️ Scheme A/B (ResNet) 已移除：ResNet 为图像分类设计，会丢弃 PPG 所需的微小亮度变化信息
 
@@ -86,15 +90,16 @@ python models/dataset.py configs/scheme_c.yaml
 ```
 models/
 ├── __init__.py
-├── dataset.py            # PyTorch Dataset（10s窗口切分、用户级划分、可选IMU/差分帧/1D信号）
-├── video_ecg_model.py    # 模型定义（C/D两种架构 + CompositeLoss）
+├── dataset.py            # PyTorch Dataset（10s窗口切分、用户级划分、可选IMU/差分帧/1D信号/绿色通道）
+├── video_ecg_model.py    # 模型定义（C/D/E三种架构 + CompositeLoss）
 ├── train.py              # 训练脚本（自动检测CUDA/MPS、early stopping）
 ├── run_eval.py           # 仅测试（加载 checkpoint 在 test 集评估）
 └── evaluate.py           # 评估（RMSE, MAE, Pearson r）
 
 configs/
 ├── scheme_c.yaml         # MTTS-CAN (差分帧 + 注意力)
-└── scheme_d.yaml         # 1D Signal (TCN, 276K params)
+├── scheme_d.yaml         # 1D Signal (TCN, 276K params)
+└── scheme_e.yaml         # 1D UNet (绿色通道PPG, ~500K params)
 ```
 
 ### 数据管线验证结果
@@ -103,8 +108,9 @@ configs/
 - 用户级划分：train=882, val=66, test=94 windows
 - Scheme C 输入：`(299, 6, 36, 36)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
 - Scheme D 输入：`(300, 3)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
+- Scheme E 输入：`(300, 1)` [+ 可选 IMU `(1000, 6)`] → 输出 `(2500,)`
 
-（训练/测试命令见上文「如何开始训练、测试」；推荐先跑 scheme_c。）
+（训练/测试命令见上文「如何开始训练、测试」；推荐先跑 scheme_e，最轻量且原理合理。）
 
 ### 待改进
 
