@@ -124,14 +124,14 @@ def split_by_user(records, train_users, val_users, test_users):
     return train_idx, val_idx, test_idx
 
 
-def split_random(records, train_ratio=0.8, val_ratio=0.1, seed=42):
+def split_random(records, train_ratio=0.9, val_ratio=0.05, seed=42):
     """
     Split record indices randomly (easier task, useful for debugging).
 
     Args:
         records: List of record dicts
-        train_ratio: Fraction for training (default 0.8)
-        val_ratio: Fraction for validation (default 0.1)
+        train_ratio: Fraction for training (default 0.9)
+        val_ratio: Fraction for validation (default 0.05, test gets remaining 0.05)
         seed: Random seed for reproducibility
     """
     import random
@@ -304,8 +304,14 @@ class VideoECGDataset(Dataset):
         return video_tensor, imu_tensor, ecg_tensor
 
 
-def create_datasets(cfg):
-    """Create train/val/test datasets from config dict."""
+def create_datasets(cfg, merge_val_to_train=False):
+    """Create train/val/test datasets from config dict.
+
+    Args:
+        cfg: Config dict
+        merge_val_to_train: If True, merge validation set into training set.
+                           Use this when using test set for early stopping (debug mode).
+    """
     data_cfg = cfg["data"]
     split_cfg = cfg["split"]
 
@@ -325,11 +331,18 @@ def create_datasets(cfg):
     seed = cfg.get("train", {}).get("seed", 42)
 
     if split_mode == "random":
-        train_ratio = split_cfg.get("train_ratio", 0.8)
-        val_ratio = split_cfg.get("val_ratio", 0.1)
-        train_pairs, val_pairs, test_pairs = split_random(
-            records, train_ratio=train_ratio, val_ratio=val_ratio, seed=seed
-        )
+        if merge_val_to_train:
+            # When using test as val, use 90/0/10 split (no separate validation)
+            train_ratio = split_cfg.get("train_ratio", 0.9)
+            train_pairs, val_pairs, test_pairs = split_random(
+                records, train_ratio=train_ratio, val_ratio=0.0, seed=seed
+            )
+        else:
+            train_ratio = split_cfg.get("train_ratio", 0.9)
+            val_ratio = split_cfg.get("val_ratio", 0.05)
+            train_pairs, val_pairs, test_pairs = split_random(
+                records, train_ratio=train_ratio, val_ratio=val_ratio, seed=seed
+            )
         print(f"Split mode: RANDOM (easier, same user may appear in train/test)")
     else:
         train_pairs, val_pairs, test_pairs = split_by_user(
@@ -338,6 +351,10 @@ def create_datasets(cfg):
             split_cfg["val_users"],
             split_cfg["test_users"],
         )
+        # Merge val into train if requested
+        if merge_val_to_train and val_pairs:
+            train_pairs = train_pairs + val_pairs
+            val_pairs = []
         print(f"Split mode: USER (harder, no data leakage)")
 
     print(f"Split: train={len(train_pairs)} pairs, val={len(val_pairs)}, test={len(test_pairs)}")

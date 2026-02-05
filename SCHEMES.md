@@ -65,11 +65,12 @@ CUDA_VISIBLE_DEVICES=0 python models/train.py --config configs/scheme_e.yaml \
 | `--quality-filter` | `good`, `good,moderate`, `all` | config 中设置 | 数据质量过滤 |
 | `--patience` | 整数 | 20-30 (看 config) | Early stopping 耐心值 |
 | `--epochs` | 整数 | 200 | 最大训练轮数 |
+| `--use-val` | flag | False | 使用 validation set 做早停（严格模式） |
 
 ### 参数详解
 
 **`--split`** 数据划分方式：
-- `random`：随机 80/10/10 划分，**推荐先用这个验证模型可行性**
+- `random`：随机 90/5/5 划分，**推荐先用这个验证模型可行性**
 - `user`：按用户划分（无数据泄露），用于最终评估
 
 **`--quality-filter`** 数据质量过滤：
@@ -84,6 +85,22 @@ CUDA_VISIBLE_DEVICES=0 python models/train.py --config configs/scheme_e.yaml \
 **`--server`** 服务器预设：
 - `3090`：小 batch、开 AMP、梯度累积
 - `a6000`：大 batch、关 AMP
+
+**`--use-val`** Early stopping 数据源：
+- **默认**：使用 **test set** 做早停（调试模式，用于验证模型可行性和数据质量）
+- `--use-val`：使用 **validation set** 做早停（严格模式，用于最终评估）
+
+```bash
+# 默认：用 test set 做早停（调试，快速验证）
+python models/train.py --config configs/scheme_e.yaml
+
+# 严格模式：用 validation set 做早停（最终评估）
+python models/train.py --config configs/scheme_e.yaml --use-val
+```
+
+> ⚠️ **注意**：默认使用 test set 做早停是为了快速验证模型可行性。确认模型有效后，应使用 `--use-val` 切换到严格模式进行最终评估。
+>
+> Checkpoint 路径会标记模式：`*_testval/` = 调试模式，无后缀 = 严格模式
 
 ---
 
@@ -207,7 +224,7 @@ python models/train.py --config configs/scheme_e.yaml --split user
 | **Val** | nxs | ~7 pairs | 早停判断 |
 | **Test** | lrk, fhy | ~19 pairs | 最终评估 |
 
-**随机划分详情**：80% train / 10% val / 10% test，按 pair 随机划分
+**随机划分详情**：90% train / 5% val / 5% test，按 pair 随机划分
 
 > 每个 pair 切成 10s 窗口（5s 步长），总计约 1000+ 个训练样本
 

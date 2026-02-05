@@ -51,7 +51,14 @@ def _dbg(hypothesisId, location, message, data, runId="repro"):
 # #endregion
 
 
-def train(cfg):
+def train(cfg, use_test_as_val=False):
+    """
+    Train the model.
+
+    Args:
+        cfg: Config dict
+        use_test_as_val: If True, use test set for early stopping (debugging mode)
+    """
     train_cfg = cfg["train"]
     use_imu = cfg["data"].get("use_imu", False)
     use_amp = train_cfg.get("use_amp", False) and torch.cuda.is_available()
@@ -75,17 +82,27 @@ def train(cfg):
     if device == "cuda":
         torch.cuda.manual_seed_all(train_cfg["seed"])
 
-    # Data
-    train_ds, val_ds, test_ds = create_datasets(cfg)
+    # Data - merge val into train when using test for early stopping
+    train_ds, val_ds, test_ds = create_datasets(cfg, merge_val_to_train=use_test_as_val)
 
     num_workers = cfg["data"].get("num_workers", 0)
     pin = device == "cuda"
     train_loader = DataLoader(train_ds, batch_size=train_cfg["batch_size"],
                               shuffle=True, num_workers=num_workers, pin_memory=pin)
-    val_loader = DataLoader(val_ds, batch_size=train_cfg["batch_size"],
-                            shuffle=False, num_workers=num_workers, pin_memory=pin)
     test_loader = DataLoader(test_ds, batch_size=train_cfg["batch_size"],
                              shuffle=False, num_workers=num_workers, pin_memory=pin)
+
+    # Debug mode: use test set for early stopping (val merged into train)
+    if use_test_as_val:
+        print("⚠️  DEBUG MODE: Using TEST set for early stopping (val merged into train)")
+        early_stop_loader = test_loader
+        early_stop_name = "test"
+        val_loader = None  # Not used
+    else:
+        val_loader = DataLoader(val_ds, batch_size=train_cfg["batch_size"],
+                                shuffle=False, num_workers=num_workers, pin_memory=pin)
+        early_stop_loader = val_loader
+        early_stop_name = "val"
 
     # Model
     model = build_model(cfg).to(device)
@@ -115,7 +132,8 @@ def train(cfg):
         quality_filter = quality_filter.replace(",", "+")  # "good,moderate" -> "good+moderate"
     patience = train_cfg.get("patience", 20)
 
-    run_name = f"{split_mode}_{quality_filter}_p{patience}"
+    debug_suffix = "_testval" if use_test_as_val else ""
+    run_name = f"{split_mode}_{quality_filter}_p{patience}{debug_suffix}"
     save_dir = os.path.join("checkpoints", scheme_name, run_name)
     os.makedirs(save_dir, exist_ok=True)
     print(f"Checkpoint dir: {save_dir}")
@@ -203,16 +221,16 @@ def train(cfg):
         train_loss /= len(train_ds)
         elapsed = time.time() - t0
 
-        # Validation
-        val_metrics = evaluate_model(model, val_loader, device=device, use_imu=use_imu, use_amp=use_amp)
+        # Validation (or test if use_test_as_val)
+        val_metrics = evaluate_model(model, early_stop_loader, device=device, use_imu=use_imu, use_amp=use_amp)
         val_loss = val_metrics["rmse"]
 
         scheduler.step(val_loss)
         lr = optimizer.param_groups[0]["lr"]
 
         print(f"Epoch {epoch:3d} | train_loss={train_loss:.4f} | "
-              f"val_rmse={val_metrics['rmse']:.4f} val_mae={val_metrics['mae']:.4f} "
-              f"val_r={val_metrics['pearson_r']:.4f} | lr={lr:.2e} | {elapsed:.1f}s")
+              f"{early_stop_name}_rmse={val_metrics['rmse']:.4f} {early_stop_name}_mae={val_metrics['mae']:.4f} "
+              f"{early_stop_name}_r={val_metrics['pearson_r']:.4f} | lr={lr:.2e} | {elapsed:.1f}s")
 
         history["epoch"].append(epoch)
         history["train_loss"].append(train_loss)
@@ -260,6 +278,8 @@ def train(cfg):
     test_metrics = evaluate_model(model, test_loader, device=device, use_imu=use_imu, use_amp=use_amp)
     print(f"\n[{scheme_name}] Test results: RMSE={test_metrics['rmse']:.4f} "
           f"MAE={test_metrics['mae']:.4f} Pearson_r={test_metrics['pearson_r']:.4f}")
+    if use_test_as_val:
+        print("  (Note: test set was used for early stopping - this is DEBUG mode, not valid for final evaluation)")
 
     return test_metrics
 
@@ -328,6 +348,7 @@ Quality filter options:
 Training control:
   --patience 20                   Set early stopping patience (default: 20-30 from config)
   --epochs 200                    Set max epochs (default: 200 from config)
+  --use-test-as-val               DEBUG: Use test set for early stopping (skip validation)
         """,
     )
     parser.add_argument("--config", default="configs/scheme_c.yaml",
@@ -344,6 +365,10 @@ Training control:
                         help="Early stopping patience (epochs without improvement)")
     parser.add_argument("--epochs", type=int, default=None,
                         help="Maximum training epochs")
+    parser.add_argument("--use-test-as-val", action="store_true", default=True,
+                        help="Use test set for early stopping (default: True for debugging)")
+    parser.add_argument("--use-val", action="store_true",
+                        help="Use separate validation set for early stopping (strict mode)")
     args = parser.parse_args()
 
     cfg = load_config_with_server_preset(args.config, args.server)
@@ -370,4 +395,8 @@ Training control:
         cfg["train"]["epochs"] = args.epochs
         print(f"Epochs override: {args.epochs}")
 
-    train(cfg)
+    # --use-val overrides the default --use-test-as-val=True
+    use_test_as_val = args.use_test_as_val and not args.use_val
+    if args.use_val:
+        print("Strict mode: using separate VALIDATION set for early stopping")
+    train(cfg, use_test_as_val=use_test_as_val)

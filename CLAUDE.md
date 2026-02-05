@@ -66,6 +66,10 @@ python models/train.py --config configs/scheme_e.yaml --quality-filter good,mode
 
 # Early stopping 控制（默认 patience=20-30）
 python models/train.py --config configs/scheme_e.yaml --patience 15                   # 调整 patience
+
+# Early stopping 数据源（默认用 test set，调试模式）
+python models/train.py --config configs/scheme_e.yaml                  # 默认：test set 做早停（调试）
+python models/train.py --config configs/scheme_e.yaml --use-val        # 严格模式：validation set 做早停
 ```
 
 **仅做测试**（用已有 checkpoint 在 test 集上评估，不训练）：
