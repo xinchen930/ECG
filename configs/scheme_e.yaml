@@ -16,6 +16,9 @@ data:
   use_1d_signal: true
   use_green_channel: true   # Use only green channel (most sensitive to PPG)
   num_workers: 4
+  # Quality filtering - exclude poor samples (HR detection failures)
+  quality_filter: "good,moderate"   # Options: "good" / "good,moderate" / null (all)
+  quality_csv: eval_results/ppg_analysis_all_samples.csv
 
 split:
   train_users: [fzq, fcy, wjy, czq, syw, wcp]

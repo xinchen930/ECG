@@ -1,6 +1,7 @@
 """
 Video-to-ECG Dataset with windowed sampling and user-level splitting.
 Supports optional IMU input (Scheme B).
+Supports quality-based filtering of samples.
 """
 
 import json
@@ -14,18 +15,63 @@ import torch
 from torch.utils.data import Dataset
 
 
-def load_metadata(samples_dir: str):
-    """Load metadata for all sample pairs, returning list of dicts."""
+def load_quality_data(quality_csv: str):
+    """Load quality data from CSV file, return dict mapping pair name to quality."""
+    if not os.path.exists(quality_csv):
+        return None
+    df = pd.read_csv(quality_csv)
+    return dict(zip(df['pair'], df['quality']))
+
+
+def load_metadata(samples_dir: str, quality_filter: str = None, quality_csv: str = None):
+    """
+    Load metadata for all sample pairs, returning list of dicts.
+
+    Args:
+        samples_dir: Path to the samples directory
+        quality_filter: Comma-separated quality levels to include, e.g. "good" or "good,moderate"
+                       If None, include all samples.
+        quality_csv: Path to quality CSV file (default: eval_results/ppg_analysis_all_samples.csv)
+    """
     samples_dir = Path(samples_dir)
+
+    # Load quality data if filtering is requested
+    quality_map = None
+    if quality_filter:
+        if quality_csv is None:
+            # Default path relative to project root
+            quality_csv = "eval_results/ppg_analysis_all_samples.csv"
+        quality_map = load_quality_data(quality_csv)
+        if quality_map is None:
+            print(f"Warning: quality_csv not found at {quality_csv}, skipping quality filter")
+        else:
+            allowed_qualities = set(q.strip() for q in quality_filter.split(","))
+            print(f"Quality filter: keeping only {allowed_qualities} samples")
+
     records = []
+    filtered_count = 0
     for pair_dir in sorted(samples_dir.iterdir()):
         meta_path = pair_dir / "metadata.json"
         if not meta_path.exists():
             continue
+
+        # Apply quality filter if enabled
+        pair_name = pair_dir.name
+        if quality_map is not None:
+            sample_quality = quality_map.get(pair_name)
+            if sample_quality not in allowed_qualities:
+                filtered_count += 1
+                continue
+
         with open(meta_path) as f:
             meta = json.load(f)
         meta["pair_dir"] = str(pair_dir)
+        meta["pair_name"] = pair_name
         records.append(meta)
+
+    if quality_filter and quality_map:
+        print(f"Quality filter: {filtered_count} samples excluded, {len(records)} remaining")
+
     return records
 
 
@@ -75,6 +121,32 @@ def split_by_user(records, train_users, val_users, test_users):
             val_idx.append(i)
         elif user in test_users:
             test_idx.append(i)
+    return train_idx, val_idx, test_idx
+
+
+def split_random(records, train_ratio=0.8, val_ratio=0.1, seed=42):
+    """
+    Split record indices randomly (easier task, useful for debugging).
+
+    Args:
+        records: List of record dicts
+        train_ratio: Fraction for training (default 0.8)
+        val_ratio: Fraction for validation (default 0.1)
+        seed: Random seed for reproducibility
+    """
+    import random
+    n = len(records)
+    indices = list(range(n))
+    random.seed(seed)
+    random.shuffle(indices)
+
+    n_train = int(n * train_ratio)
+    n_val = int(n * val_ratio)
+
+    train_idx = indices[:n_train]
+    val_idx = indices[n_train:n_train + n_val]
+    test_idx = indices[n_train + n_val:]
+
     return train_idx, val_idx, test_idx
 
 
@@ -237,15 +309,37 @@ def create_datasets(cfg):
     data_cfg = cfg["data"]
     split_cfg = cfg["split"]
 
-    records = load_metadata(data_cfg["samples_dir"])
+    # Quality filtering
+    quality_filter = data_cfg.get("quality_filter", None)
+    quality_csv = data_cfg.get("quality_csv", None)
+
+    records = load_metadata(
+        data_cfg["samples_dir"],
+        quality_filter=quality_filter,
+        quality_csv=quality_csv
+    )
     print(f"Loaded {len(records)} sample pairs")
 
-    train_pairs, val_pairs, test_pairs = split_by_user(
-        records,
-        split_cfg["train_users"],
-        split_cfg["val_users"],
-        split_cfg["test_users"],
-    )
+    # Split mode: "user" (harder, no data leakage) or "random" (easier, for debugging)
+    split_mode = split_cfg.get("mode", "user")
+    seed = cfg.get("train", {}).get("seed", 42)
+
+    if split_mode == "random":
+        train_ratio = split_cfg.get("train_ratio", 0.8)
+        val_ratio = split_cfg.get("val_ratio", 0.1)
+        train_pairs, val_pairs, test_pairs = split_random(
+            records, train_ratio=train_ratio, val_ratio=val_ratio, seed=seed
+        )
+        print(f"Split mode: RANDOM (easier, same user may appear in train/test)")
+    else:
+        train_pairs, val_pairs, test_pairs = split_by_user(
+            records,
+            split_cfg["train_users"],
+            split_cfg["val_users"],
+            split_cfg["test_users"],
+        )
+        print(f"Split mode: USER (harder, no data leakage)")
+
     print(f"Split: train={len(train_pairs)} pairs, val={len(val_pairs)}, test={len(test_pairs)}")
 
     full_index = build_window_index(

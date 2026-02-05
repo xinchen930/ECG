@@ -55,6 +55,17 @@ python models/train.py --config configs/scheme_f.yaml --server a6000
 
 # 指定 GPU 卡
 CUDA_VISIBLE_DEVICES=1 python models/train.py --config configs/scheme_f.yaml --server 3090
+
+# 数据划分方式（推荐先用 random 验证可行性）
+python models/train.py --config configs/scheme_e.yaml --split random                  # 随机划分（简单）
+python models/train.py --config configs/scheme_e.yaml --split user                    # 用户划分（困难，最终评估）
+
+# 数据质量过滤
+python models/train.py --config configs/scheme_e.yaml --quality-filter good           # 只用高质量 (80样本)
+python models/train.py --config configs/scheme_e.yaml --quality-filter good,moderate  # 排除 poor (88样本)
+
+# Early stopping 控制（默认 patience=20-30）
+python models/train.py --config configs/scheme_e.yaml --patience 15                   # 调整 patience
 ```
 
 **仅做测试**（用已有 checkpoint 在 test 集上评估，不训练）：
@@ -92,16 +103,20 @@ python models/dataset.py configs/scheme_c.yaml
 >
 > 💡 Scheme F/G 是 end-to-end 方案，直接处理视频帧，无需预提取 PPG
 >
+> 💡 设置 `data.quality_filter: "good"` 可过滤低质量样本（详见 `eval_results/data_quality_report.md`）
+>
 > ⚠️ Scheme A/B (ResNet) 已移除：ResNet 为图像分类设计，会丢弃 PPG 所需的微小亮度变化信息
 >
 > ⚠️ Scheme G (PhysNet) 显存较大，3090 建议使用 A6000
+>
+> ⚠️ 数据质量：98个样本中有10个 poor 样本（HR误差>20BPM），建议过滤
 
 ### 已完成文件
 
 ```
 models/
 ├── __init__.py
-├── dataset.py            # PyTorch Dataset（10s窗口切分、用户级划分、可选IMU/差分帧/1D信号/绿色通道）
+├── dataset.py            # PyTorch Dataset（10s窗口切分、用户级划分、质量过滤、可选IMU/差分帧/1D信号/绿色通道）
 ├── video_ecg_model.py    # 模型定义（C/D/E/F/G五种架构 + CompositeLoss）
 ├── train.py              # 训练脚本（自动检测CUDA/MPS、early stopping）
 ├── run_eval.py           # 仅测试（加载 checkpoint 在 test 集评估）

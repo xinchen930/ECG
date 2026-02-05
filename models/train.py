@@ -299,6 +299,19 @@ Examples:
   python models/train.py --config configs/scheme_f.yaml
   python models/train.py --config configs/scheme_f.yaml --server 3090
   python models/train.py --config configs/scheme_f.yaml --server a6000
+
+Data split options:
+  --split random                  Random split (easier, for debugging/feasibility check)
+  --split user                    User-level split (harder, no data leakage, for final eval)
+
+Quality filter options:
+  --quality-filter good           Only use good quality samples (80 samples)
+  --quality-filter good,moderate  Exclude poor samples (88 samples)
+  --quality-filter all            Use all samples including poor (98 samples)
+
+Training control:
+  --patience 20                   Set early stopping patience (default: 20-30 from config)
+  --epochs 200                    Set max epochs (default: 200 from config)
         """,
     )
     parser.add_argument("--config", default="configs/scheme_c.yaml",
@@ -306,8 +319,39 @@ Examples:
     parser.add_argument("--server", type=str, default="a6000",
                         choices=["3090", "a6000"],
                         help="Server type for automatic parameter tuning (3090 or a6000)")
+    parser.add_argument("--split", type=str, default=None,
+                        choices=["random", "user"],
+                        help="Data split mode: 'random' (easier) or 'user' (harder, no leakage)")
+    parser.add_argument("--quality-filter", type=str, default=None,
+                        help="Override quality filter: 'good', 'good,moderate', or 'all' (use all samples)")
+    parser.add_argument("--patience", type=int, default=None,
+                        help="Early stopping patience (epochs without improvement)")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Maximum training epochs")
     args = parser.parse_args()
 
     cfg = load_config_with_server_preset(args.config, args.server)
+
+    # Override split mode from command line
+    if args.split is not None:
+        cfg["split"]["mode"] = args.split
+        print(f"Split mode override: {args.split}")
+
+    # Override quality_filter from command line
+    if args.quality_filter is not None:
+        if args.quality_filter.lower() == "all":
+            cfg["data"]["quality_filter"] = None
+            print("Quality filter: using ALL samples (including poor)")
+        else:
+            cfg["data"]["quality_filter"] = args.quality_filter
+            print(f"Quality filter override: {args.quality_filter}")
+
+    # Override training parameters from command line
+    if args.patience is not None:
+        cfg["train"]["patience"] = args.patience
+        print(f"Patience override: {args.patience}")
+    if args.epochs is not None:
+        cfg["train"]["epochs"] = args.epochs
+        print(f"Epochs override: {args.epochs}")
 
     train(cfg)

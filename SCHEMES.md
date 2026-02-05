@@ -4,6 +4,51 @@
 
 ---
 
+## 快速开始
+
+```bash
+# 推荐的第一次运行命令（随机划分 + 好数据 + 适中参数）
+python models/train.py --config configs/scheme_e.yaml \
+    --split random \
+    --quality-filter good \
+    --patience 15 \
+    --server 3090
+```
+
+---
+
+## 命令行参数汇总
+
+| 参数 | 可选值 | 默认值 | 说明 |
+|------|--------|--------|------|
+| `--config` | `configs/scheme_*.yaml` | `scheme_c.yaml` | 选择模型方案 |
+| `--server` | `3090`, `a6000` | `a6000` | 自动应用服务器最优参数 |
+| `--split` | `random`, `user` | `user` | 数据划分方式（random 更简单） |
+| `--quality-filter` | `good`, `good,moderate`, `all` | config 中设置 | 数据质量过滤 |
+| `--patience` | 整数 | 20-30 (看 config) | Early stopping 耐心值 |
+| `--epochs` | 整数 | 200 | 最大训练轮数 |
+
+### 参数详解
+
+**`--split`** 数据划分方式：
+- `random`：随机 80/10/10 划分，**推荐先用这个验证模型可行性**
+- `user`：按用户划分（无数据泄露），用于最终评估
+
+**`--quality-filter`** 数据质量过滤：
+- `good`：只用高质量样本（80个），**推荐**
+- `good,moderate`：排除 poor 样本（88个）
+- `all`：用全部数据（98个，含 10 个 poor）
+
+**`--patience`** Early stopping：
+- 连续多少个 epoch val_loss 不下降就停止
+- 默认 20-30，如果训练太早停可以调大到 15-20
+
+**`--server`** 服务器预设：
+- `3090`：小 batch、开 AMP、梯度累积
+- `a6000`：大 batch、关 AMP
+
+---
+
 ## 方案总览
 
 | Scheme | 架构 | 输入形式 | 参数量 | 显存 | 3090 (24G) | A6000 (48G) |
@@ -94,6 +139,77 @@ python models/train.py --config configs/scheme_d.yaml --server a6000
 | **G** | A6000 | 16 | 1 | false | 8 | 16 |
 
 > 💡 不加 `--server` 参数时使用配置文件的默认值
+
+---
+
+## 数据划分与质量过滤
+
+### 数据划分方式
+
+支持两种划分模式：
+
+| 模式 | 命令行参数 | 难度 | 说明 |
+|------|-----------|------|------|
+| **随机划分** | `--split random` | 简单 | 同一用户可能出现在 train/test，用于验证模型可行性 |
+| **用户划分** | `--split user` | 困难 | 严格按用户划分，无数据泄露，用于最终评估 |
+
+```bash
+# 推荐：先用随机划分验证模型能否学到东西
+python models/train.py --config configs/scheme_e.yaml --split random
+
+# 效果好了再用用户划分做最终评估
+python models/train.py --config configs/scheme_e.yaml --split user
+```
+
+**用户划分详情**（默认）：
+
+| 集合 | 用户 | 样本数 | 说明 |
+|------|------|--------|------|
+| **Train** | fzq, fcy, wjy, czq, syw, wcp | ~72 pairs | 训练用 |
+| **Val** | nxs | ~7 pairs | 早停判断 |
+| **Test** | lrk, fhy | ~19 pairs | 最终评估 |
+
+**随机划分详情**：80% train / 10% val / 10% test，按 pair 随机划分
+
+> 每个 pair 切成 10s 窗口（5s 步长），总计约 1000+ 个训练样本
+
+### 数据质量过滤
+
+98 个样本中有 **10 个 poor 样本**（PPG 心率检测失败，误差 >20 BPM），建议过滤：
+
+```bash
+# 只用高质量样本 (80个, 推荐)
+python models/train.py --config configs/scheme_e.yaml --quality-filter good
+
+# 排除 poor 样本 (88个)
+python models/train.py --config configs/scheme_e.yaml --quality-filter good,moderate
+
+# 用全部数据 (98个)
+python models/train.py --config configs/scheme_e.yaml --quality-filter all
+```
+
+或在 config 中设置：
+```yaml
+data:
+  quality_filter: "good"  # "good" / "good,moderate" / null
+```
+
+> 📊 详细质量分析见 `eval_results/data_quality_report.md`
+
+### Early Stopping 控制
+
+默认 patience=20-30，如果模型训练到十几个 epoch 就停了，可以增大 patience：
+
+```bash
+# 增大 patience，允许更长时间不改进
+python models/train.py --config configs/scheme_e.yaml --patience 50
+
+# 同时增大最大 epochs
+python models/train.py --config configs/scheme_e.yaml --patience 50 --epochs 300
+
+# 组合使用
+python models/train.py --config configs/scheme_e.yaml --server 3090 --quality-filter good --patience 50
+```
 
 ---
 
@@ -331,6 +447,20 @@ IMU 数据会在模型的 bottleneck 层与视频特征融合。
 
 ## 常见问题
 
+### Early Stopping 太早（训练十几个 epoch 就停了）
+
+这通常是因为 validation loss 波动导致 patience 耗尽。解决方案：
+
+```bash
+# 增大 patience
+python models/train.py --config configs/scheme_e.yaml --patience 50
+
+# 或同时增大 epochs
+python models/train.py --config configs/scheme_e.yaml --patience 50 --epochs 300
+```
+
+> 💡 默认 patience=20-30，对于小数据集可能需要更大的值
+
 ### OOM (显存不足)
 
 **推荐**：使用 `--server 3090` 参数自动应用低显存配置。
@@ -353,6 +483,7 @@ train:
 2. 换 loss：使用 `loss: composite` 而非 `loss: mse`
 3. 尝试不同方案：Scheme E/F 比 D 更有可能捕捉波形细节
 4. 降低目标：先试预测心率/R-R间期，再尝试完整波形
+5. **过滤低质量数据**：使用 `--quality-filter good` 排除 poor 样本
 
 ### 3090 跑不了某方案
 
@@ -365,6 +496,54 @@ train:
 | E | batch=64, 无压力 |
 | F | batch=8, grad_accum=2, use_amp=true |
 | G | batch=2, grad_accum=8, use_amp=true (**仍建议用 A6000**) |
+
+---
+
+## 推荐调试流程
+
+目前模型效果较差，建议按以下步骤逐步验证：
+
+### 第一步：验证模型可行性（随机划分 + 好数据）
+
+先用最简单的设置，验证模型能否学到东西：
+
+```bash
+# 随机划分（简单） + 只用好数据 + 适中 patience
+python models/train.py --config configs/scheme_e.yaml \
+    --split random \
+    --quality-filter good \
+    --patience 15 \
+    --server 3090
+```
+
+**预期**：如果模型可行，val_loss 应该能持续下降，Pearson r 应该 > 0.3
+
+### 第二步：正式评估（用户划分）
+
+随机划分效果还行后，再用用户划分做正式评估：
+
+```bash
+# 用户划分（困难，无数据泄露）
+python models/train.py --config configs/scheme_e.yaml \
+    --split user \
+    --quality-filter good \
+    --patience 20 \
+    --server 3090
+```
+
+**预期**：用户划分效果会比随机划分差，但如果差太多说明模型泛化能力不足
+
+### 第三步：尝试其他方案
+
+如果 Scheme E 效果不好，按顺序尝试其他方案：
+
+```bash
+# Scheme F (End-to-end，可能更强)
+python models/train.py --config configs/scheme_f.yaml --split random --quality-filter good --server 3090
+
+# Scheme C (学术验证过的架构)
+python models/train.py --config configs/scheme_c.yaml --split random --quality-filter good --server 3090
+```
 
 ---
 
