@@ -8,9 +8,13 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import time
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -103,6 +107,7 @@ def train(cfg):
 
     best_val_loss = float("inf")
     patience_counter = 0
+    history = {"epoch": [], "train_loss": [], "val_rmse": [], "val_mae": [], "val_pearson_r": []}
 
     for epoch in range(1, train_cfg["epochs"] + 1):
         model.train()
@@ -188,6 +193,12 @@ def train(cfg):
               f"val_rmse={val_metrics['rmse']:.4f} val_mae={val_metrics['mae']:.4f} "
               f"val_r={val_metrics['pearson_r']:.4f} | lr={lr:.2e} | {elapsed:.1f}s")
 
+        history["epoch"].append(epoch)
+        history["train_loss"].append(train_loss)
+        history["val_rmse"].append(val_metrics["rmse"])
+        history["val_mae"].append(val_metrics["mae"])
+        history["val_pearson_r"].append(val_metrics["pearson_r"])
+
         # Early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -199,6 +210,28 @@ def train(cfg):
             if patience_counter >= train_cfg["patience"]:
                 print(f"Early stopping at epoch {epoch}")
                 break
+
+    # Save training curves (per-scheme, so different schemes don't overwrite)
+    if history["epoch"]:
+        with open(os.path.join(save_dir, "training_history.json"), "w") as f:
+            json.dump(history, f, indent=2)
+        fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+        ep = history["epoch"]
+        axes[0].plot(ep, history["train_loss"], "b.-", label="train_loss")
+        axes[0].plot(ep, history["val_rmse"], "r.-", label="val_rmse")
+        axes[0].set_ylabel("Loss / RMSE")
+        axes[0].legend(loc="best")
+        axes[0].grid(True, alpha=0.3)
+        axes[1].plot(ep, history["val_pearson_r"], "g.-", label="val_pearson_r")
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("Pearson r")
+        axes[1].legend(loc="best")
+        axes[1].grid(True, alpha=0.3)
+        plt.suptitle(f"Training curves ({scheme_name})")
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, "training_curves.png"), dpi=120, bbox_inches="tight")
+        plt.close()
+        print(f"  -> Saved {save_dir}/training_curves.png and training_history.json")
 
     # Final test evaluation
     model.load_state_dict(torch.load(os.path.join(save_dir, "best_model.pt"),
