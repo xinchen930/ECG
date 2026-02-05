@@ -11,8 +11,6 @@
 
 name: ecg
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
   - defaults
 
@@ -20,18 +18,12 @@ dependencies:
   # Python
   - python=3.10
 
-  # PyTorch with CUDA 12.6 (支持 Blackwell 架构)
-  - pytorch>=2.5
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=12.6
-
   # 数据处理
   - numpy
   - pandas
   - scipy
 
-  # 视频处理
+  # 视频处理 (conda-forge 版本更稳定)
   - opencv
 
   # 可视化
@@ -47,5 +39,11 @@ dependencies:
   # pip 安装的包
   - pip
   - pip:
-    # 如果 conda 安装 opencv 有问题，用 pip
+    # PyTorch with CUDA 12.6 (支持 Blackwell 架构)
+    # 注意：conda 没有 pytorch-cuda=12.6，必须用 pip 安装
+    - --extra-index-url https://download.pytorch.org/whl/cu126
+    - torch>=2.5
+    - torchvision
+    - torchaudio
+    # opencv 备用
     - opencv-python-headless
