@@ -154,6 +154,99 @@ configs/
 - 数据增强尚未实现
 - 尚未跑过完整训练，需在 GPU 服务器上验证
 
+---
+
+## PPG2ECG Baseline Validation (新增)
+
+**目的**：在公开数据集上验证 PPG → ECG 是否可行，排除数据质量问题
+
+**论文**：*"Reconstructing QRS Complex from PPG by Transformed Attentional Neural Networks"* (IEEE Sensors 2020)
+
+### 文件结构
+
+```
+external_data/
+├── bidmc/                      # BIDMC 原始数据 (需手动下载)
+└── bidmc_processed/            # 预处理后数据
+    ├── train.pt
+    ├── test.pt
+    └── metadata.json
+
+scripts/
+└── prepare_bidmc.py            # BIDMC 数据预处理脚本
+
+models/
+├── ppg2ecg.py                  # PPG2ECG 模型 (Encoder-Decoder + STN + Attention)
+└── train_ppg2ecg.py            # PPG2ECG 训练脚本
+
+configs/
+└── ppg2ecg_bidmc.yaml          # BIDMC 训练配置
+```
+
+### 如何运行
+
+**Step 1: 下载 BIDMC 数据集**
+```bash
+# 手动下载：访问 https://physionet.org/content/bidmc/1.0.0/
+# 下载 bidmc_csv.zip 或全部文件
+# 解压到 external_data/bidmc/
+```
+
+**Step 2: 预处理数据**
+```bash
+python scripts/prepare_bidmc.py --data_dir external_data/bidmc --output_dir external_data/bidmc_processed
+```
+
+**Step 3: 训练**
+```bash
+# 基本训练
+python models/train_ppg2ecg.py --config configs/ppg2ecg_bidmc.yaml
+
+# 指定 GPU
+CUDA_VISIBLE_DEVICES=0 python models/train_ppg2ecg.py --config configs/ppg2ecg_bidmc.yaml
+
+# 调整参数
+python models/train_ppg2ecg.py --config configs/ppg2ecg_bidmc.yaml --epochs 100 --batch_size 128
+```
+
+**Step 4: 评估**
+```bash
+python models/train_ppg2ecg.py --config configs/ppg2ecg_bidmc.yaml --eval_only --checkpoint checkpoints/ppg2ecg_bidmc/best_model.pt
+```
+
+### 预期指标
+
+| 指标 | 目标值 | 论文值 |
+|------|--------|--------|
+| Pearson r | > 0.7 | 0.844 |
+| RMSE | < 0.3 | - |
+| MAE | < 0.2 | - |
+
+### 判断逻辑
+
+```
+BIDMC 成功 (r > 0.7) → 模型 OK，继续在我们数据上验证
+BIDMC 失败 (r < 0.5) → 检查复现细节，或尝试 CardioGAN
+```
+
+### 模型架构
+
+- **Encoder**: Conv1d (1→32→64→128→256→512), stride=2, PReLU
+- **Decoder**: ConvTranspose1d 镜像结构, Tanh 输出
+- **STN**: Spatial Transformer Network，校准 PPG 时序偏移
+- **Attention**: 多头注意力，聚焦 QRS 复合波区域
+- **Loss**: QRS-enhanced L1 loss (对 R 峰区域加权)
+
+### 训练配置 (BIDMC)
+
+- 输入: `[batch, 1, 256]` (256 samples @ 125 Hz ≈ 2 秒)
+- 批大小: 256
+- 学习率: 0.0001
+- 优化器: Adam
+- Scheduler: CosineAnnealingLR
+- Epochs: 300
+- Early stopping patience: 50
+
 ## Architecture
 
 ### Data Pipeline

@@ -20,3 +20,9 @@ build/
 # .conda/
 # venv/
 # .env
+
+# External datasets (large files)
+external_data/
+
+# Model checkpoints
+checkpoints/

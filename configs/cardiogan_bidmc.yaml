@@ -1,0 +1,56 @@
+# CardioGAN Training Configuration for BIDMC Dataset
+#
+# Paper: "CardioGAN: Attentive Generative Adversarial Network with Dual Discriminators
+#         for Synthesis of ECG from PPG" (AAAI 2021)
+# Dataset: BIDMC (53 subjects, 125 Hz native, resampled to 128 Hz)
+#
+# Usage:
+#   python models/train_cardiogan.py --config configs/cardiogan_bidmc.yaml
+#
+# Note: CardioGAN uses different parameters than PPG2ECG:
+#   - 128 Hz sampling rate (vs 125 Hz for PPG2ECG)
+#   - 512 samples per window (vs 256)
+#   - 4 seconds per window (vs 2 seconds)
+
+# Model configuration
+model:
+  type: cardiogan
+  input_size: 512                  # Window size (512 samples @ 128 Hz = 4s)
+  base_filters: 64                 # Base filter count for conv layers
+
+# Data configuration
+# Note: Reuses PPG2ECG preprocessed data, resamples internally to 512 samples
+data:
+  train_path: external_data/bidmc_processed/train.pt
+  test_path: external_data/bidmc_processed/test.pt
+  sampling_rate: 128               # Hz (internal resampling from 125 Hz)
+
+# Training configuration (from paper)
+training:
+  epochs: 50                       # Paper uses 15 on full dataset, we use more for smaller BIDMC
+  batch_size: 16                   # Smaller than paper (8-32) for single GPU
+  learning_rate: 0.0002            # Standard GAN learning rate
+  beta1: 0.5                       # Adam momentum (standard for GANs)
+  beta2: 0.999                     # Adam second moment
+  patience: 20                     # Early stopping patience
+  seed: 2019
+  data_augmentation: false         # Disable for GAN training stability
+
+# Loss configuration (from paper)
+# L_total = α * L_adv + β * L_cycle + λ * L_recon
+loss:
+  alpha: 3.0                       # Adversarial loss weight
+  beta: 1.0                        # Cycle consistency weight (not used in simplified version)
+  lambda_recon: 30.0               # Reconstruction loss weight
+
+# Output configuration
+output:
+  checkpoint_dir: checkpoints/cardiogan_bidmc/
+  log_dir: logs/cardiogan_bidmc/
+  save_every: 10                   # Save checkpoint every N epochs
+  eval_every: 1                    # Evaluate every N epochs
+
+# Device configuration
+device:
+  use_amp: false                   # AMP not recommended for GAN training
+  num_workers: 4                   # DataLoader workers

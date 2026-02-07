@@ -1,0 +1,53 @@
+# PPG2ECG Training Configuration for BIDMC Dataset
+#
+# Paper: "Reconstructing QRS Complex from PPG by Transformed Attentional Neural Networks"
+# Dataset: BIDMC (53 subjects, 125 Hz, 8 min each)
+#
+# Usage:
+#   python models/train_ppg2ecg.py --config configs/ppg2ecg_bidmc.yaml
+
+# Model configuration
+model:
+  type: ppg2ecg                    # ppg2ecg or lstm
+  input_size: 256                  # Window size (256 samples @ 125 Hz = ~2s)
+  use_stn: true                    # Spatial Transformer Network for offset calibration
+  use_attention: true              # Attention mechanism for QRS focus
+
+# Data configuration
+data:
+  train_path: external_data/bidmc_processed/train.pt
+  test_path: external_data/bidmc_processed/test.pt
+  full_window: 512                 # Full window size for augmentation
+  train_window: 256                # Training window (center crop with random offset)
+  sampling_rate: 125               # Hz
+
+# Training configuration (matching original implementation)
+training:
+  epochs: 300                      # From original BIDMC.cfg
+  batch_size: 256                  # From original BIDMC.cfg
+  learning_rate: 0.0001            # From original BIDMC.cfg (1e-4)
+  optimizer: Adam
+  scheduler: CosineAnnealingLR     # Optional, enable with use_scheduler
+  use_scheduler: true
+  scheduler_period: 30             # T_max = epochs // 10
+  patience: 50                     # Early stopping patience
+  seed: 2019                       # From original BIDMC.cfg
+  data_augmentation: true          # Random offset augmentation
+
+# Loss configuration
+loss:
+  type: qrs_enhanced               # qrs_enhanced or l1
+  beta: 0.5                        # QRS weight (from original BIDMC.cfg)
+  sigma: 1.0                       # Gaussian sigma for R-peak expansion
+
+# Output configuration
+output:
+  checkpoint_dir: checkpoints/ppg2ecg_bidmc/
+  log_dir: logs/ppg2ecg_bidmc/
+  save_every: 50                   # Save checkpoint every N epochs
+  eval_every: 5                    # Evaluate every N epochs
+
+# Device configuration
+device:
+  use_amp: true                    # Automatic Mixed Precision
+  num_workers: 4                   # DataLoader workers
