@@ -100,18 +100,7 @@
       96,
       97
     ],
-    "count": 98,
-    "users": [
-      "czq",
-      "fcy",
-      "fhy",
-      "fzq",
-      "lrk",
-      "nxs",
-      "syw",
-      "wcp",
-      "wjy"
-    ]
+    "description": "First batch, 320x568 resolution"
   },
   "batch_2": {
     "pair_ids": [
@@ -153,10 +142,6 @@
       133,
       134
     ],
-    "count": 37,
-    "users": [
-      "yjw",
-      "yyh"
-    ]
+    "description": "Second batch, 1080x1920 resolution"
   }
 }
