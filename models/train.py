@@ -113,7 +113,9 @@ def train(cfg, use_test_as_val=False):
     patience = train_cfg.get("patience", 20)
 
     debug_suffix = "_testval" if use_test_as_val else ""
-    run_name = f"{split_mode}_{quality_filter}_p{patience}{debug_suffix}"
+    run_tag = cfg.get("run_tag", "")
+    tag_suffix = f"_{run_tag}" if run_tag else ""
+    run_name = f"{split_mode}_{quality_filter}_p{patience}{debug_suffix}{tag_suffix}"
     save_dir = os.path.join("checkpoints", scheme_name, run_name)
     os.makedirs(save_dir, exist_ok=True)
     print(f"Checkpoint dir: {save_dir}")
@@ -270,6 +272,27 @@ def train(cfg, use_test_as_val=False):
     if use_test_as_val:
         print("  (Note: test set was used for early stopping - this is DEBUG mode, not valid for final evaluation)")
 
+    # Save final summary for easy results collection
+    summary = {
+        "scheme_name": scheme_name,
+        "run_name": run_name,
+        "split_mode": split_mode,
+        "quality_filter": quality_filter,
+        "use_test_as_val": use_test_as_val,
+        "run_tag": cfg.get("run_tag", ""),
+        "data_dir": cfg["data"]["samples_dir"],
+        "total_params": total_params,
+        "trainable_params": trainable_params,
+        "best_epoch": len(history["epoch"]) - patience_counter if history["epoch"] else 0,
+        "total_epochs": len(history["epoch"]),
+        "test_metrics": test_metrics,
+        "device": device,
+    }
+    summary_path = os.path.join(save_dir, "run_summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"  -> Saved {summary_path}")
+
     return test_metrics
 
 
@@ -358,9 +381,18 @@ Training control:
                         help="Use test set for early stopping (default: True for debugging)")
     parser.add_argument("--use-val", action="store_true",
                         help="Use separate validation set for early stopping (strict mode)")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Override data.samples_dir (e.g. training_data/batch1, training_data/batch2)")
+    parser.add_argument("--run-tag", type=str, default=None,
+                        help="Extra tag appended to checkpoint dir name (e.g. 'batch1', 'batch1+2')")
     args = parser.parse_args()
 
     cfg = load_config_with_server_preset(args.config, args.server)
+
+    # Override data directory for batch experiments
+    if args.data_dir is not None:
+        cfg["data"]["samples_dir"] = args.data_dir
+        print(f"Data dir override: {args.data_dir}")
 
     # Override split mode from command line
     if args.split is not None:
@@ -383,6 +415,11 @@ Training control:
     if args.epochs is not None:
         cfg["train"]["epochs"] = args.epochs
         print(f"Epochs override: {args.epochs}")
+
+    # Store run tag in config for checkpoint naming
+    if args.run_tag is not None:
+        cfg["run_tag"] = args.run_tag
+        print(f"Run tag: {args.run_tag}")
 
     # --use-val overrides the default --use-test-as-val=True
     use_test_as_val = args.use_test_as_val and not args.use_val

@@ -22,6 +22,7 @@ data:
   quality_csv: eval_results/ppg_analysis_all_samples.csv
 
 split:
+  mode: user
   train_users: [fzq, fcy, wjy, czq, syw, wcp]
   val_users: [nxs]
   test_users: [lrk, fhy]

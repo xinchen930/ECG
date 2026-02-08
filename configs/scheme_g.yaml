@@ -16,8 +16,11 @@ data:
   use_diff_frames: false
   use_1d_signal: false
   num_workers: 4
+  quality_filter: "good,moderate"
+  quality_csv: eval_results/ppg_analysis_all_samples.csv
 
 split:
+  mode: user
   train_users: [fzq, fcy, wjy, czq, syw, wcp]
   val_users: [nxs]
   test_users: [lrk, fhy]
