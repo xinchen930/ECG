@@ -31,26 +31,6 @@ from video_ecg_model import build_model, build_criterion
 from evaluate import evaluate_model
 
 
-# #region agent log
-def _dbg(hypothesisId, location, message, data, runId="repro"):
-    import json, time
-    payload = {
-        "sessionId": "debug-session",
-        "runId": runId,
-        "hypothesisId": hypothesisId,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open("/home/xinchen/ECG/.cursor/debug.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-# #endregion
-
-
 def train(cfg, use_test_as_val=False):
     """
     Train the model.
@@ -144,6 +124,10 @@ def train(cfg, use_test_as_val=False):
         yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
     print(f"Config saved to: {config_save_path}")
 
+    # Check if criterion supports epoch parameter (CompositeLossV2 dynamic weighting)
+    from video_ecg_model import CompositeLossV2
+    criterion_has_epoch = isinstance(criterion, CompositeLossV2)
+
     best_val_loss = float("inf")
     patience_counter = 0
     history = {"epoch": [], "train_loss": [], "val_rmse": [], "val_mae": [], "val_pearson_r": []}
@@ -157,32 +141,37 @@ def train(cfg, use_test_as_val=False):
             if (batch_idx % accum_steps) == 0:
                 optimizer.zero_grad()
 
+            # Compute loss; pass epoch for dynamic weighting if supported
+            def _compute_loss(pred, ecg):
+                if criterion_has_epoch:
+                    main_loss = criterion(pred, ecg, epoch=epoch) / accum_steps
+                else:
+                    main_loss = criterion(pred, ecg) / accum_steps
+                # Add PPG auxiliary loss for STMap two-stage model
+                if hasattr(model, 'get_ppg_aux_loss'):
+                    main_loss = main_loss + model.get_ppg_aux_loss(ecg) / accum_steps
+                return main_loss
+
             if use_imu:
                 video, imu, ecg = batch
                 video, imu, ecg = video.to(device), imu.to(device), ecg.to(device)
-                if epoch == 1 and batch_idx == 0:
-                    _dbg("H1", "models/train.py:batch", "first_batch_shapes",
-                         {"video": list(video.shape), "imu": list(imu.shape), "ecg": list(ecg.shape)})
                 if use_amp:
                     with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                         pred = model(video, imu)
-                        loss = criterion(pred, ecg) / accum_steps
+                        loss = _compute_loss(pred, ecg)
                 else:
                     pred = model(video, imu)
-                    loss = criterion(pred, ecg) / accum_steps
+                    loss = _compute_loss(pred, ecg)
             else:
                 video, ecg = batch
                 video, ecg = video.to(device), ecg.to(device)
-                if epoch == 1 and batch_idx == 0:
-                    _dbg("H1", "models/train.py:batch", "first_batch_shapes",
-                         {"video": list(video.shape), "ecg": list(ecg.shape)})
                 if use_amp:
                     with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                         pred = model(video)
-                        loss = criterion(pred, ecg) / accum_steps
+                        loss = _compute_loss(pred, ecg)
                 else:
                     pred = model(video)
-                    loss = criterion(pred, ecg) / accum_steps
+                    loss = _compute_loss(pred, ecg)
 
             if scaler is not None:
                 scaler.scale(loss).backward()

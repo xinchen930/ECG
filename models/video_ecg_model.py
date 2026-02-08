@@ -3,9 +3,11 @@ Video-to-ECG Reconstruction Model.
 
 Scheme C: MTTS-CAN-inspired dual-branch attention + TSM, lightweight (~2.8M params)
 Scheme D: 1D Signal-Centric TCN, ultra-lightweight (~276K params)
-Scheme E: 1D UNet with skip connections, PPG→ECG (~500K params)
+Scheme E: 1D UNet with skip connections, PPG->ECG (~500K params)
 Scheme F: EfficientPhys temporal-spatial attention, end-to-end (~1.5M params)
 Scheme G: PhysNet 3D CNN, classic rPPG architecture (~3-5M params)
+Scheme H: PhysFormer Temporal Difference Transformer, end-to-end (~7-10M params)
+          (defined in models/physformer_ecg.py, registered here via build_model)
 
 Controlled entirely via config.
 """
@@ -101,24 +103,6 @@ class TemporalShift(nn.Module):
         """x: (B*T, C, H, W) -> (B*T, C, H, W) with temporal shift."""
         BT, C, H, W = x.shape
         T = self.n_segment
-        # #region agent log
-        try:
-            import json, time
-            rem = int(BT % T) if T else None
-            payload = {
-                "sessionId": "debug-session",
-                "runId": "repro",
-                "hypothesisId": "H1",
-                "location": "models/video_ecg_model.py:TemporalShift.forward",
-                "message": "tsm_view_check",
-                "data": {"BT": int(BT), "C": int(C), "H": int(H), "W": int(W), "n_segment": int(T), "BT_mod_n_segment": rem},
-                "timestamp": int(time.time() * 1000),
-            }
-            with open("/home/xinchen/ECG/.cursor/debug.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-        # #endregion
         B = BT // T
         x = x.view(B, T, C, H, W)
         fold = C // 3
@@ -208,23 +192,6 @@ class DualBranchEncoder(nn.Module):
     def forward(self, x):
         """x: (B, T, 6, H, W) -> (B, T, D)"""
         B, T, C, H, W = x.shape
-        # #region agent log
-        try:
-            import json, time
-            payload = {
-                "sessionId": "debug-session",
-                "runId": "repro",
-                "hypothesisId": "H1",
-                "location": "models/video_ecg_model.py:DualBranchEncoder.forward",
-                "message": "dual_branch_input_shape",
-                "data": {"B": int(B), "T": int(T), "C": int(C), "H": int(H), "W": int(W)},
-                "timestamp": int(time.time() * 1000),
-            }
-            with open("/home/xinchen/ECG/.cursor/debug.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-        # #endregion
         diff = x[:, :, :3].reshape(B * T, 3, H, W)
         raw = x[:, :, 3:].reshape(B * T, 3, H, W)
 
@@ -890,6 +857,209 @@ class CompositeLoss(nn.Module):
         return loss_mse + self.alpha * loss_freq + self.beta * loss_pearson
 
 
+def qrs_enhanced_weight(ecg_target, peak_width=25, peak_weight=3.0):
+    """
+    Generate per-sample weight tensor that emphasizes R-peak regions.
+
+    Args:
+        ecg_target: (B, T) ECG target waveform (normalized)
+        peak_width: Number of samples around each R-peak to upweight
+        peak_weight: Weight multiplier for R-peak regions (non-peak = 1.0)
+
+    Returns:
+        weight: (B, T) tensor with higher weights around R-peaks
+    """
+    B, T = ecg_target.shape
+    weight = torch.ones_like(ecg_target)
+
+    for b in range(B):
+        sig = ecg_target[b]
+        threshold = sig.mean() + 0.5 * sig.std()
+
+        # Find peaks: points higher than both neighbors and above threshold
+        is_peak = torch.zeros(T, dtype=torch.bool, device=ecg_target.device)
+        if T > 2:
+            is_peak[1:-1] = (sig[1:-1] > sig[:-2]) & (sig[1:-1] > sig[2:]) & (sig[1:-1] > threshold)
+
+        peak_indices = torch.where(is_peak)[0]
+
+        for pidx in peak_indices:
+            start = max(0, pidx.item() - peak_width)
+            end = min(T, pidx.item() + peak_width + 1)
+            weight[b, start:end] = peak_weight
+
+    return weight
+
+
+class STFTLoss(nn.Module):
+    """
+    Multi-scale STFT loss: compares spectrograms at multiple resolutions.
+    Captures both fine-grained and broad frequency structure.
+    """
+
+    def __init__(self, fft_sizes=(256, 512, 1024), hop_ratio=0.25):
+        super().__init__()
+        self.fft_sizes = fft_sizes
+        self.hop_ratio = hop_ratio
+
+    def _single_stft_loss(self, pred, target, fft_size):
+        """Spectral convergence + log magnitude loss for one FFT size."""
+        hop_length = max(1, int(fft_size * self.hop_ratio))
+        window = torch.hann_window(fft_size, device=pred.device, dtype=torch.float32)
+
+        pred_stft = torch.stft(pred.float(), fft_size, hop_length=hop_length,
+                               window=window, return_complex=True)
+        tgt_stft = torch.stft(target.float(), fft_size, hop_length=hop_length,
+                              window=window, return_complex=True)
+
+        pred_mag = pred_stft.abs()
+        tgt_mag = tgt_stft.abs()
+
+        # Spectral convergence: Frobenius norm ratio
+        sc_loss = torch.norm(tgt_mag - pred_mag, p="fro") / (torch.norm(tgt_mag, p="fro") + 1e-8)
+        # Log magnitude L1
+        log_loss = F.l1_loss(torch.log(pred_mag + 1e-8), torch.log(tgt_mag + 1e-8))
+
+        return sc_loss + log_loss
+
+    def forward(self, pred, target):
+        """pred, target: (B, T) waveforms. Returns averaged multi-scale STFT loss."""
+        loss = 0.0
+        n_valid = 0
+        for fft_size in self.fft_sizes:
+            if pred.shape[-1] >= fft_size:
+                loss += self._single_stft_loss(pred, target, fft_size)
+                n_valid += 1
+        return loss / max(n_valid, 1)
+
+
+class CompositeLossV2(nn.Module):
+    """
+    Advanced composite loss with QRS-enhanced weighting, multi-scale STFT,
+    and optional dynamic epoch-based weight scheduling (PhysFormer-style).
+
+    Components:
+      1. QRS-weighted MSE  -- waveform matching with R-peak emphasis
+      2. Neg Pearson       -- shape correlation
+      3. Spectral (FFT)    -- frequency magnitude matching
+      4. Multi-scale STFT  -- time-frequency structure
+
+    Dynamic scheduling (if enabled):
+      Early epochs: Pearson-dominant (shape matching first)
+      Late epochs:  frequency losses ramp up (preserve spectral detail)
+
+    Config keys (under train):
+        loss: composite_v2
+        mse_weight: 1.0         # MSE weight
+        pearson_weight: 0.5     # Pearson loss weight
+        spectral_weight: 0.1    # FFT spectral loss weight
+        stft_weight: 0.1        # Multi-scale STFT loss weight
+        qrs_peak_weight: 3.0    # R-peak region multiplier
+        qrs_peak_width: 25      # Samples around R-peak to upweight
+        dynamic_weighting: false # Enable epoch-based schedule
+        warmup_epochs: 20       # Epochs before ramping frequency losses
+    """
+
+    def __init__(self, mse_weight=1.0, pearson_weight=0.5,
+                 spectral_weight=0.1, stft_weight=0.1,
+                 qrs_peak_weight=3.0, qrs_peak_width=25,
+                 dynamic_weighting=False, warmup_epochs=20, total_epochs=200,
+                 fft_sizes=(256, 512, 1024),
+                 # Legacy compat: qrs_weight used as alias for enabling QRS-weighted MSE
+                 qrs_weight=None, stft_n_fft=None, stft_hop_length=None):
+        super().__init__()
+        self.w_mse = mse_weight
+        self.w_pearson = pearson_weight
+        self.w_spectral = spectral_weight
+        self.w_stft = stft_weight
+        self.qrs_peak_weight = qrs_peak_weight
+        self.qrs_peak_width = qrs_peak_width
+        self.dynamic_weighting = dynamic_weighting
+        self.warmup_epochs = warmup_epochs
+        self.total_epochs = total_epochs
+
+        # Legacy compat: if qrs_weight was passed (old-style), use it as a separate additive loss
+        self._legacy_qrs_weight = qrs_weight
+
+        self.stft_loss_fn = STFTLoss(fft_sizes=fft_sizes)
+
+    def _pearson_loss(self, pred, target):
+        """Negative mean Pearson correlation."""
+        pred_c = pred - pred.mean(dim=-1, keepdim=True)
+        tgt_c = target - target.mean(dim=-1, keepdim=True)
+        num = (pred_c * tgt_c).sum(dim=-1)
+        den = torch.sqrt((pred_c ** 2).sum(dim=-1) * (tgt_c ** 2).sum(dim=-1) + 1e-8)
+        r = num / den
+        return 1.0 - r.mean()
+
+    def _spectral_loss(self, pred, target):
+        """L1 on FFT magnitudes."""
+        pred_fft = torch.fft.rfft(pred.float(), dim=-1)
+        tgt_fft = torch.fft.rfft(target.float(), dim=-1)
+        return F.l1_loss(pred_fft.abs(), tgt_fft.abs())
+
+    def _qrs_enhanced_loss(self, pred, target):
+        """Legacy: L1 with heuristic QRS weighting (threshold-based)."""
+        tgt_abs = target.float().abs()
+        tgt_mean = tgt_abs.mean(dim=-1, keepdim=True)
+        tgt_std = tgt_abs.std(dim=-1, keepdim=True) + 1e-8
+        qrs_mask = (tgt_abs > tgt_mean + 1.5 * tgt_std).float()
+        weight = 1.0 + 2.0 * qrs_mask
+        return (weight * (pred.float() - target.float()).abs()).mean()
+
+    def _get_epoch_weights(self, epoch):
+        """Dynamic weight scheduling based on training progress."""
+        if not self.dynamic_weighting or epoch is None:
+            return self.w_spectral, self.w_pearson, self.w_stft
+
+        if epoch < self.warmup_epochs:
+            # Early: emphasize shape matching (Pearson)
+            freq_scale = 0.3
+            pearson_scale = 1.5
+            stft_scale = 0.1
+        else:
+            progress = min(1.0, (epoch - self.warmup_epochs) /
+                          max(1, self.total_epochs - self.warmup_epochs))
+            freq_scale = 0.3 + 0.7 * progress      # 0.3 -> 1.0
+            pearson_scale = 1.5 - 0.5 * progress    # 1.5 -> 1.0
+            stft_scale = 0.1 + 0.9 * progress       # 0.1 -> 1.0
+
+        return (self.w_spectral * freq_scale,
+                self.w_pearson * pearson_scale,
+                self.w_stft * stft_scale)
+
+    def forward(self, pred, target, epoch=None):
+        """
+        Args:
+            pred: (B, T) predicted ECG
+            target: (B, T) ground truth ECG
+            epoch: Current epoch for dynamic weighting (optional)
+        """
+        w_spectral, w_pearson, w_stft = self._get_epoch_weights(epoch)
+
+        # QRS-enhanced weighted MSE
+        if self.qrs_peak_weight > 1.0:
+            weights = qrs_enhanced_weight(target, self.qrs_peak_width, self.qrs_peak_weight)
+            loss_mse = (weights * (pred - target) ** 2).mean()
+        else:
+            loss_mse = F.mse_loss(pred, target)
+
+        loss = self.w_mse * loss_mse
+
+        if w_pearson > 0:
+            loss = loss + w_pearson * self._pearson_loss(pred, target)
+        if w_spectral > 0:
+            loss = loss + w_spectral * self._spectral_loss(pred, target)
+        if w_stft > 0:
+            loss = loss + w_stft * self.stft_loss_fn(pred, target)
+
+        # Legacy: additive QRS L1 loss (if qrs_weight was configured)
+        if self._legacy_qrs_weight is not None and self._legacy_qrs_weight > 0:
+            loss = loss + self._legacy_qrs_weight * self._qrs_enhanced_loss(pred, target)
+
+        return loss
+
+
 # ──────────────────────────────────────────────
 #  Build helpers
 # ──────────────────────────────────────────────
@@ -976,8 +1146,22 @@ def build_model(cfg):
             use_imu=use_imu,
             imu_dim=imu_dim,
         )
+    elif model_type == "physformer_ecg":
+        # Scheme H: PhysFormer Temporal Difference Transformer
+        from physformer_ecg import PhysFormerECG
+        model = PhysFormerECG(cfg)
+    elif model_type == "stmap_direct":
+        # Scheme I-Direct: STMap -> 2D CNN -> ECG
+        from stmap_ecg import STMapDirectECG
+        model = STMapDirectECG(cfg)
+    elif model_type == "stmap_twostage":
+        # Scheme I-TwoStage: STMap -> PPG -> ECG
+        from stmap_ecg import STMapTwoStageECG
+        model = STMapTwoStageECG(cfg)
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Use 'mtts_can', 'signal_1d', 'unet_1d', 'efficientphys', or 'physnet'.")
+        raise ValueError(f"Unknown model type: {model_type}. "
+                         f"Use 'mtts_can', 'signal_1d', 'unet_1d', 'efficientphys', "
+                         f"'physnet', 'physformer_ecg', 'stmap_direct', or 'stmap_twostage'.")
     return model
 
 
@@ -990,6 +1174,22 @@ def build_criterion(cfg):
         alpha = cfg["train"].get("alpha_freq", 0.1)
         beta = cfg["train"].get("beta_pearson", 0.1)
         return CompositeLoss(alpha_freq=alpha, beta_pearson=beta)
+    elif loss_cfg == "composite_v2":
+        train_cfg = cfg["train"]
+        return CompositeLossV2(
+            mse_weight=train_cfg.get("mse_weight", 1.0),
+            pearson_weight=train_cfg.get("pearson_weight", 0.5),
+            spectral_weight=train_cfg.get("spectral_weight", 0.1),
+            stft_weight=train_cfg.get("stft_weight", 0.1),
+            qrs_peak_weight=train_cfg.get("qrs_peak_weight", 3.0),
+            qrs_peak_width=train_cfg.get("qrs_peak_width", 25),
+            dynamic_weighting=train_cfg.get("dynamic_weighting", False),
+            warmup_epochs=train_cfg.get("warmup_epochs", 20),
+            total_epochs=train_cfg.get("epochs", 200),
+            fft_sizes=tuple(train_cfg.get("stft_fft_sizes", [256, 512, 1024])),
+            # Legacy compat
+            qrs_weight=train_cfg.get("qrs_weight", None),
+        )
     else:
         raise ValueError(f"Unknown loss: {loss_cfg}")
 

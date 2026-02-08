@@ -1,6 +1,6 @@
 # Scheme E: 1D UNet for PPG → ECG reconstruction
 # Uses encoder-decoder with skip connections to preserve fine-grained details
-# Input: Green channel (most sensitive to blood hemoglobin) or RGB means
+# Input: Red channel (best for finger transmissive PPG - validated 8/10 HR detection)
 scheme_name: scheme_e
 
 data:
@@ -14,7 +14,8 @@ data:
   use_imu: false
   use_diff_frames: false
   use_1d_signal: true
-  use_green_channel: true   # Use only green channel (most sensitive to PPG)
+  # Channel selection: "red_channel" (best for finger PPG), "green_channel", "rgb_channels"
+  input_type: red_channel
   num_workers: 4
   # Quality filtering - exclude poor samples (HR detection failures)
   quality_filter: "good,moderate"   # Options: "good" / "good,moderate" / null (all)

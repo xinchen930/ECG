@@ -1,0 +1,46 @@
+# Scheme E (RGB variant): 1D UNet with all 3 channels for PPG -> ECG
+# Uses all BGR channels as separate PPG signals (3x input channels)
+# Compare against scheme_e.yaml (red_channel only) to evaluate channel importance
+scheme_name: scheme_e_rgb
+
+data:
+  samples_dir: training_data/samples
+  window_seconds: 10
+  stride_seconds: 5
+  video_fps: 30
+  ecg_sr: 250
+  img_height: 64    # Only used for video loading, not model
+  img_width: 64
+  use_imu: false
+  use_diff_frames: false
+  use_1d_signal: true
+  # Use all three BGR channels as separate PPG signals
+  input_type: rgb_channels
+  num_workers: 4
+  quality_filter: "good,moderate"
+  quality_csv: eval_results/ppg_analysis_all_samples.csv
+
+split:
+  train_users: [fzq, fcy, wjy, czq, syw, wcp]
+  val_users: [nxs]
+  test_users: [lrk, fhy]
+
+model:
+  type: unet_1d
+  in_channels: 3          # 3 channels (BGR) instead of 1
+  base_channels: 32
+  depth: 4
+  kernel_size: 7
+  dropout: 0.1
+
+train:
+  epochs: 200
+  batch_size: 64
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  patience: 30
+  grad_clip: 1.0
+  seed: 42
+  loss: composite
+  alpha_freq: 0.1
+  beta_pearson: 0.1

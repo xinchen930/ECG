@@ -1,0 +1,62 @@
+# Scheme I-Direct: STMap -> 2D CNN -> ECG (direct regression)
+#
+# STMap (Spatio-Temporal Map) converts video into a compact 2D representation
+# that preserves spatial perfusion information. The 2D CNN processes this map
+# with spatial downsampling and temporal preservation, then upsamples to ECG.
+#
+# Advantages over 1D (Scheme D/E): retains spatial variation across finger patches
+# Advantages over 3D (Scheme F/G): much lower memory; no 3D convolutions needed
+#
+# Input:  STMap (C, N_spatial, T_video) where N_spatial = grid_h * grid_w
+# Output: ECG (T_ecg,) reconstructed waveform
+#
+# ~200-400K params, ~2-3 GB VRAM, batch=32 on 3090
+
+scheme_name: scheme_i_direct
+
+data:
+  samples_dir: training_data/samples
+  window_seconds: 10
+  stride_seconds: 5
+  video_fps: 30
+  ecg_sr: 250
+  img_height: 64          # Video frame resize (before STMap extraction)
+  img_width: 64
+  use_imu: false
+  use_diff_frames: false
+  use_1d_signal: false
+  use_green_channel: false
+  input_type: stmap        # Triggers STMap construction in dataset
+  stmap_grid_h: 8          # Vertical grid divisions
+  stmap_grid_w: 8          # Horizontal grid divisions
+  stmap_channels: rgb      # 'rgb', 'red', 'green' (red best for finger PPG)
+  stmap_multiscale: false  # Set true for multi-scale (4+8+16 grids)
+  stmap_scales: null       # Custom scales, e.g. [4, 8, 16]
+  num_workers: 4
+  quality_filter: "good,moderate"
+  quality_csv: eval_results/ppg_analysis_all_samples.csv
+
+split:
+  mode: user
+  train_users: [fzq, fcy, wjy, czq, syw, wcp]
+  val_users: [nxs]
+  test_users: [lrk, fhy]
+
+model:
+  type: stmap_direct
+  encoder_channels: [32, 64, 128, 256]   # 2D CNN encoder channels
+  decoder_channels: [128, 64]             # 1D temporal decoder channels
+  kernel_size: 3
+  dropout: 0.1
+
+train:
+  epochs: 200
+  batch_size: 32           # STMap is very lightweight
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  patience: 30
+  grad_clip: 1.0
+  seed: 42
+  loss: composite
+  alpha_freq: 0.1
+  beta_pearson: 0.1

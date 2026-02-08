@@ -2,6 +2,7 @@
 Video-to-ECG Dataset with windowed sampling and user-level splitting.
 Supports optional IMU input (Scheme B).
 Supports quality-based filtering of samples.
+Supports STMap (Spatio-Temporal Map) input mode (Scheme I).
 """
 
 import json
@@ -75,16 +76,50 @@ def load_metadata(samples_dir: str, quality_filter: str = None, quality_csv: str
     return records
 
 
-def build_window_index(records, window_sec=10, stride_sec=5, video_fps=30, ecg_sr=250):
+def _detect_ecg_gaps(ecg_csv_path, gap_threshold_ms=100):
+    """
+    Detect timestamp gaps in ECG data.
+
+    Args:
+        ecg_csv_path: Path to ecg.csv with timestamp_ms column
+        gap_threshold_ms: Gap threshold in ms (normal interval ~4ms at 250Hz)
+
+    Returns:
+        List of sample indices where gaps occur (gap is between index i and i+1).
+        Returns empty list if timestamp_ms column not found.
+    """
+    try:
+        df = pd.read_csv(ecg_csv_path, usecols=["timestamp_ms"])
+        ts = df["timestamp_ms"].values
+        diffs = np.diff(ts)
+        gap_indices = np.where(diffs > gap_threshold_ms)[0]
+        return gap_indices.tolist()
+    except (KeyError, ValueError):
+        # timestamp_ms column missing or unreadable; skip gap detection
+        return []
+
+
+def build_window_index(records, window_sec=10, stride_sec=5, video_fps=30, ecg_sr=250,
+                       gap_aware=True, gap_threshold_ms=100):
     """
     Build an index of (pair_idx, start_frame, end_frame, ecg_start, ecg_end)
     for all valid windows across all sample pairs.
+
+    Args:
+        records: List of metadata dicts
+        window_sec: Window length in seconds
+        stride_sec: Stride between windows in seconds
+        video_fps: Video frame rate
+        ecg_sr: ECG sampling rate
+        gap_aware: If True, skip windows that span ECG timestamp gaps
+        gap_threshold_ms: Minimum gap size to detect (ms). Normal ECG interval is ~4ms.
     """
     window_frames = int(window_sec * video_fps)
     stride_frames = int(stride_sec * video_fps)
     window_ecg = int(window_sec * ecg_sr)
 
     index = []
+    skipped_gap_windows = 0
     for i, rec in enumerate(records):
         video_path = os.path.join(rec["pair_dir"], "video_0.mp4")
         if not os.path.exists(video_path):
@@ -94,6 +129,13 @@ def build_window_index(records, window_sec=10, stride_sec=5, video_fps=30, ecg_s
         cap.release()
 
         n_ecg = rec.get("ecg_samples", 0)
+
+        # Detect ECG gaps for this pair
+        gap_indices = set()
+        if gap_aware:
+            ecg_csv_path = os.path.join(rec["pair_dir"], "ecg.csv")
+            if os.path.exists(ecg_csv_path):
+                gap_indices = set(_detect_ecg_gaps(ecg_csv_path, gap_threshold_ms))
 
         max_ecg_windows = n_ecg // window_ecg
         max_video_windows = (n_frames - window_frames) // stride_frames + 1
@@ -105,7 +147,16 @@ def build_window_index(records, window_sec=10, stride_sec=5, video_fps=30, ecg_s
             ecg_start = int(w * stride_sec * ecg_sr)
             ecg_end = ecg_start + window_ecg
             if vf_end <= n_frames and ecg_end <= n_ecg:
+                # Check if any gap falls within this ECG window
+                if gap_aware and gap_indices:
+                    has_gap = any(ecg_start <= g < ecg_end for g in gap_indices)
+                    if has_gap:
+                        skipped_gap_windows += 1
+                        continue
                 index.append((i, vf_start, vf_end, ecg_start, ecg_end))
+
+    if gap_aware and skipped_gap_windows > 0:
+        print(f"Gap-aware windowing: skipped {skipped_gap_windows} windows spanning ECG gaps")
 
     return index
 
@@ -163,7 +214,10 @@ class VideoECGDataset(Dataset):
     def __init__(self, records, window_index, img_h=64, img_w=64,
                  ecg_col="ecg_counts_filt_monitor", normalize_ecg=True,
                  use_imu=False, imu_sr=100, window_sec=10,
-                 use_diff_frames=False, use_1d_signal=False, use_green_channel=False):
+                 use_diff_frames=False, use_1d_signal=False, use_green_channel=False,
+                 input_type=None,
+                 stmap_grid_h=8, stmap_grid_w=8, stmap_channels="rgb",
+                 stmap_multiscale=False, stmap_scales=None):
         self.records = records
         self.window_index = window_index
         self.img_h = img_h
@@ -176,7 +230,24 @@ class VideoECGDataset(Dataset):
         self.use_diff_frames = use_diff_frames
         self.use_1d_signal = use_1d_signal
         self.use_green_channel = use_green_channel
+        # input_type: flexible channel selection or representation mode
+        # Supported 1D modes: "green_channel", "red_channel", "rgb_channels", "all_channels", "rgb_means"
+        # STMap mode: "stmap" — builds Spatio-Temporal Map from video frames
+        # Falls back to use_green_channel boolean for backward compatibility
+        self.input_type = input_type
         self.imu_window_len = int(imu_sr * window_sec)
+
+        # STMap builder (only when input_type == "stmap")
+        self.use_stmap = (input_type == "stmap")
+        self.stmap_multiscale = stmap_multiscale
+        self.stmap_scales = stmap_scales
+        if self.use_stmap:
+            from stmap_builder import STMapBuilder
+            self.stmap_builder = STMapBuilder(
+                n_spatial_h=stmap_grid_h,
+                n_spatial_w=stmap_grid_w,
+                channels=stmap_channels,
+            )
 
         # Pre-load ECG data for all referenced pairs
         self._ecg_cache = {}
@@ -220,29 +291,67 @@ class VideoECGDataset(Dataset):
         cap = cv2.VideoCapture(video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, vf_start)
 
+        # Determine target resolution: 0/None means use native resolution
+        target_h = self.img_h
+        target_w = self.img_w
+        if not target_h or not target_w:
+            # Read native resolution from video
+            native_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            native_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            target_h = target_h or native_h
+            target_w = target_w or native_w
+
         frames = []
         for _ in range(vf_end - vf_start):
             ret, frame = cap.read()
             if not ret:
-                frame = np.zeros((self.img_h, self.img_w, 3), dtype=np.uint8)
+                frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
             else:
-                frame = cv2.resize(frame, (self.img_w, self.img_h))
+                # Only resize if native resolution differs from target
+                if frame.shape[0] != target_h or frame.shape[1] != target_w:
+                    frame = cv2.resize(frame, (target_w, target_h))
             frames.append(frame)
         cap.release()
 
         video = np.stack(frames).astype(np.float32) / 255.0  # (T, H, W, 3)
 
-        if self.use_1d_signal:
+        if self.use_stmap:
+            # Build STMap: (T, H, W, 3) -> (T, 3, H, W) -> STMapBuilder -> (C, N_spatial, T)
+            video_chw = np.transpose(video, (0, 3, 1, 2))  # (T, 3, H, W)
+            if self.stmap_multiscale:
+                stmap = self.stmap_builder.build_multiscale(
+                    video_chw, scales=self.stmap_scales
+                )
+            else:
+                stmap = self.stmap_builder.build(video_chw)
+            # stmap: (C, N_spatial, T) — z-normalize per channel
+            for c in range(stmap.shape[0]):
+                ch = stmap[c]  # (N_spatial, T)
+                ch_mean = ch.mean()
+                ch_std = ch.std() + 1e-8
+                stmap[c] = (ch - ch_mean) / ch_std
+            video_tensor = stmap  # (C, N_spatial, T)
+        elif self.use_1d_signal:
             # Extract per-frame ROI statistics
             # video: (T, H, W, 3) in BGR format (OpenCV default)
-            if self.use_green_channel:
-                # Green channel (index 1 in BGR) is most sensitive to blood hemoglobin
-                # video: (T, H, W, 3) -> signal: (T, 1)
-                signal = video[:, :, :, 1:2].mean(axis=(1, 2))  # (T, 1) - green channel mean
+            # Determine channel selection via input_type (preferred) or legacy use_green_channel
+            effective_type = self.input_type
+            if effective_type is None:
+                # Backward compatibility: map boolean to input_type
+                effective_type = "green_channel" if self.use_green_channel else "rgb_means"
+
+            if effective_type == "green_channel":
+                # Green channel (index 1 in BGR) - sensitive to blood hemoglobin
+                signal = video[:, :, :, 1:2].mean(axis=(1, 2))  # (T, 1)
+            elif effective_type == "red_channel":
+                # Red channel (index 2 in BGR) - best for finger transmissive PPG
+                signal = video[:, :, :, 2:3].mean(axis=(1, 2))  # (T, 1)
+            elif effective_type in ("rgb_channels", "all_channels", "rgb_means"):
+                # All three BGR channels as separate signals
+                signal = video.mean(axis=(1, 2))  # (T, 3)
             else:
-                # Use all RGB channels
-                # video: (T, H, W, 3) -> signal: (T, 3)
-                signal = video.mean(axis=(1, 2))  # (T, 3) - RGB means per frame
+                raise ValueError(f"Unknown input_type: {effective_type}. "
+                                 f"Use 'green_channel', 'red_channel', 'rgb_channels', 'all_channels', or 'rgb_means'.")
             # Z-normalize per channel
             signal_mean = signal.mean(axis=0, keepdims=True)
             signal_std = signal.std(axis=0, keepdims=True) + 1e-8
@@ -359,12 +468,17 @@ def create_datasets(cfg, merge_val_to_train=False):
 
     print(f"Split: train={len(train_pairs)} pairs, val={len(val_pairs)}, test={len(test_pairs)}")
 
+    gap_aware = data_cfg.get("gap_aware", True)  # Enable gap-aware windowing by default
+    gap_threshold_ms = data_cfg.get("gap_threshold_ms", 100)
+
     full_index = build_window_index(
         records,
         window_sec=data_cfg["window_seconds"],
         stride_sec=data_cfg["stride_seconds"],
         video_fps=data_cfg["video_fps"],
         ecg_sr=data_cfg["ecg_sr"],
+        gap_aware=gap_aware,
+        gap_threshold_ms=gap_threshold_ms,
     )
     print(f"Total windows: {len(full_index)}")
 
@@ -383,16 +497,39 @@ def create_datasets(cfg, merge_val_to_train=False):
     use_diff_frames = data_cfg.get("use_diff_frames", False)
     use_1d_signal = data_cfg.get("use_1d_signal", False)
     use_green_channel = data_cfg.get("use_green_channel", False)
+    # input_type overrides use_green_channel when set (preferred config key)
+    input_type = data_cfg.get("input_type", None)
+
+    # STMap parameters (only used when input_type == "stmap")
+    stmap_grid_h = data_cfg.get("stmap_grid_h", 8)
+    stmap_grid_w = data_cfg.get("stmap_grid_w", 8)
+    stmap_channels = data_cfg.get("stmap_channels", "rgb")
+    stmap_multiscale = data_cfg.get("stmap_multiscale", False)
+    stmap_scales = data_cfg.get("stmap_scales", None)  # e.g. [4, 8, 16]
+
+    # Resolution: support null/0/"auto" for native resolution
+    img_h = data_cfg.get("img_height", 64)
+    img_w = data_cfg.get("img_width", 64)
+    if img_h in (None, "auto", 0):
+        img_h = 0  # Signal to use native resolution
+    if img_w in (None, "auto", 0):
+        img_w = 0
 
     kwargs = dict(
-        img_h=data_cfg["img_height"],
-        img_w=data_cfg["img_width"],
+        img_h=img_h,
+        img_w=img_w,
         use_imu=use_imu,
         imu_sr=imu_sr,
         window_sec=data_cfg["window_seconds"],
         use_diff_frames=use_diff_frames,
         use_1d_signal=use_1d_signal,
         use_green_channel=use_green_channel,
+        input_type=input_type,
+        stmap_grid_h=stmap_grid_h,
+        stmap_grid_w=stmap_grid_w,
+        stmap_channels=stmap_channels,
+        stmap_multiscale=stmap_multiscale,
+        stmap_scales=stmap_scales,
     )
 
     train_ds = VideoECGDataset(records, train_index, **kwargs)

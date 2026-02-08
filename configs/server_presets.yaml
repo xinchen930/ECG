@@ -41,6 +41,27 @@
     use_amp: true
     num_workers: 2  # reduce to save CPU memory
 
+  # Scheme H (PhysFormer): ~20-30GB with 128x128, needs grad checkpointing
+  scheme_h:
+    batch_size: 2
+    gradient_accumulation_steps: 8  # effective batch = 16
+    use_amp: true
+    num_workers: 2  # reduce to save CPU memory
+
+  # Scheme I-Direct (STMap -> 2D CNN -> ECG): ~2-3GB, very lightweight
+  scheme_i_direct:
+    batch_size: 64
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 4
+
+  # Scheme I-TwoStage (STMap -> PPG -> ECG): ~2-4GB, lightweight
+  scheme_i_twostage:
+    batch_size: 64
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 4
+
 
 # NVIDIA A6000 (48GB VRAM)
 a6000:
@@ -75,6 +96,27 @@ a6000:
   # Scheme G (PhysNet): now feasible with good batch
   scheme_g:
     batch_size: 16
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 8
+
+  # Scheme H (PhysFormer): comfortable with AMP on A6000
+  scheme_h:
+    batch_size: 8
+    gradient_accumulation_steps: 2  # effective batch = 16
+    use_amp: true
+    num_workers: 8
+
+  # Scheme I-Direct (STMap -> 2D CNN -> ECG): very lightweight
+  scheme_i_direct:
+    batch_size: 128
+    gradient_accumulation_steps: 1
+    use_amp: false
+    num_workers: 8
+
+  # Scheme I-TwoStage (STMap -> PPG -> ECG): lightweight
+  scheme_i_twostage:
+    batch_size: 128
     gradient_accumulation_steps: 1
     use_amp: false
     num_workers: 8

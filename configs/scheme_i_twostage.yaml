@@ -1,0 +1,67 @@
+# Scheme I-TwoStage: STMap -> PPG -> ECG (two-stage reconstruction)
+#
+# Two-stage pipeline that first extracts a 1D PPG signal from the STMap
+# via 2D CNN, then reconstructs ECG from PPG using a 1D UNet decoder.
+#
+# Stage 1: 2D CNN collapses spatial dimension to extract PPG waveform
+# Stage 2: 1D UNet with skip connections reconstructs ECG morphology
+#
+# Optional multi-task: PPG auxiliary loss encourages physiologically
+# plausible intermediate PPG (correlates with downsampled ECG + smooth).
+#
+# Input:  STMap (C, N_spatial, T_video)
+# Output: ECG (T_ecg,) reconstructed waveform
+#
+# ~400-800K params, ~2-4 GB VRAM
+
+scheme_name: scheme_i_twostage
+
+data:
+  samples_dir: training_data/samples
+  window_seconds: 10
+  stride_seconds: 5
+  video_fps: 30
+  ecg_sr: 250
+  img_height: 64
+  img_width: 64
+  use_imu: false
+  use_diff_frames: false
+  use_1d_signal: false
+  use_green_channel: false
+  input_type: stmap
+  stmap_grid_h: 8
+  stmap_grid_w: 8
+  stmap_channels: rgb
+  stmap_multiscale: false
+  stmap_scales: null
+  num_workers: 4
+  quality_filter: "good,moderate"
+  quality_csv: eval_results/ppg_analysis_all_samples.csv
+
+split:
+  mode: user
+  train_users: [fzq, fcy, wjy, czq, syw, wcp]
+  val_users: [nxs]
+  test_users: [lrk, fhy]
+
+model:
+  type: stmap_twostage
+  ppg_extractor_channels: [32, 64, 128]    # Stage 1: 2D CNN channels
+  ecg_decoder_channels: [64, 128, 256]     # Stage 2: 1D UNet channels
+  ecg_decoder_depth: 3                      # UNet depth
+  kernel_size: 3
+  dropout: 0.1
+  multitask_ppg: true          # Enable PPG auxiliary loss
+  ppg_loss_weight: 0.3         # Weight for PPG aux loss
+
+train:
+  epochs: 200
+  batch_size: 32
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  patience: 30
+  grad_clip: 1.0
+  seed: 42
+  loss: composite
+  alpha_freq: 0.1
+  beta_pearson: 0.1

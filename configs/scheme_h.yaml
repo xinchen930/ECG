@@ -1,0 +1,59 @@
+# Scheme H: PhysFormer - Temporal Difference Transformer for Video -> ECG
+# Based on PhysFormer (CVPR 2022), adapted for ECG reconstruction.
+# Key innovation: Center-Difference Convolution (CDC) in Q/K projections
+# amplifies subtle frame-to-frame brightness changes (PPG signal).
+#
+# 3090 (24GB): batch=2 with AMP + grad accumulation + gradient checkpointing
+# A6000 (48GB): batch=4-8 with AMP
+scheme_name: scheme_h
+
+data:
+  samples_dir: training_data/samples
+  window_seconds: 10
+  stride_seconds: 5
+  video_fps: 30
+  ecg_sr: 250
+  img_height: 128           # PhysFormer benefits from higher resolution
+  img_width: 128
+  use_imu: false
+  use_diff_frames: false
+  use_1d_signal: false
+  num_workers: 4
+  quality_filter: "good,moderate"
+
+split:
+  mode: user
+  train_users: [fzq, fcy, wjy, czq, syw, wcp]
+  val_users: [nxs]
+  test_users: [lrk, fhy]
+
+model:
+  type: physformer_ecg
+  dim: 96                   # transformer hidden dimension
+  depth: 4                  # number of TD-Transformer blocks
+  heads: 4                  # attention heads
+  theta: 0.6               # CDC temporal difference mixing ratio (0=standard, 1=pure diff)
+  mlp_ratio: 4.0            # FFN expansion ratio
+  in_channels: 3
+  dropout: 0.1
+  attn_drop: 0.0
+  imu_dim: 64
+  decoder_channels: [128, 64, 32]   # ECG decoder ConvTranspose1d channels
+  gradient_checkpointing: true       # save VRAM at cost of ~30% slower training
+
+train:
+  epochs: 200
+  batch_size: 4              # 3090: 2, A6000: 4-8
+  gradient_accumulation_steps: 4   # Effective batch = 16
+  use_amp: true              # Mixed precision (required for 3090, recommended for A6000)
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  patience: 30
+  grad_clip: 1.0
+  seed: 42
+  loss: composite_v2
+  mse_weight: 1.0
+  pearson_weight: 0.5
+  spectral_weight: 0.1
+  stft_weight: 0.1
+  qrs_weight: 0.2
