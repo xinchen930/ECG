@@ -791,19 +791,25 @@ For phone-held-against-finger:
 
 ### 5.2 Audio/Heart Sound (PCG) Fusion
 
-Phone microphones can potentially capture heart sounds (S1, S2). The relationship between PCG and ECG:
+**⚠️ UPDATE (2026-02-08)**: 经验证，全部 98 个视频均包含 AAC 音轨，部分样本可听到明显心跳声。PCG 融合可行性从 2/5 上调至 **3.5/5**。
+
+Phone microphones can capture heart sounds (S1, S2). The relationship between PCG and ECG:
 - S1 (first heart sound) corresponds to mitral/tricuspid valve closure, near QRS complex
 - S2 (second heart sound) corresponds to aortic/pulmonic valve closure, near T wave end
+- 手指贴住摄像头时，手指本身可能充当心音传导介质
 
 | Strategy | Description |
 |----------|------------|
 | **Audio preprocessing** | Bandpass 20-200 Hz, denoise, extract envelope |
 | **Feature extraction** | Mel spectrogram or MFCC as features |
+| **Heart sound segmentation** | S1/S2 detection → event timing features |
 | **Fusion** | Late fusion (concat with video features) or cross-attention |
 
-**Challenge**: Audio quality from phone is highly variable; heart sounds may be weak or absent.
+**已确认数据可用性**: 全部 98 个视频含 AAC 音轨，用户确认部分文件有明显心跳声。
 
-**Recommendation**: 2/5 for now - Only if initial results show promise and audio data is available.
+**Challenge**: 音频质量因样本而异；需评估有多少样本的心音清晰可用。
+
+**Recommendation**: 3.5/5 - 数据已确认可用。在视频模型验证后，应作为第二优先的融合模态。
 
 ### 5.3 Fusion Architecture Strategies
 

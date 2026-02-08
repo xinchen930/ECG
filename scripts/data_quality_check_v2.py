@@ -317,13 +317,6 @@ def check_audio():
     print("5. AUDIO CHECK")
     print("=" * 70)
 
-    try:
-        import cv2
-    except ImportError:
-        print("OpenCV not available, skipping audio check")
-        return {}
-
-    # Use ffprobe if available, otherwise just check with cv2
     import subprocess
 
     results = {}
@@ -335,6 +328,7 @@ def check_audio():
         has_audio = False
         audio_info = "N/A"
 
+        # Method 1: Try ffprobe
         try:
             result = subprocess.run(
                 ['ffprobe', '-v', 'quiet', '-select_streams', 'a:0',
@@ -350,7 +344,18 @@ def check_audio():
                     s = streams[0]
                     audio_info = f"codec={s.get('codec_name','?')}, sr={s.get('sample_rate','?')}Hz, ch={s.get('channels','?')}"
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            audio_info = "ffprobe not available"
+            # Method 2: Fallback to binary mp4 atom scanning
+            try:
+                with open(video_path, 'rb') as f:
+                    data = f.read()
+                if b'soun' in data and (b'mp4a' in data or b'sowt' in data):
+                    has_audio = True
+                    codec = 'AAC' if b'mp4a' in data else 'PCM'
+                    audio_info = f"detected via binary scan ({codec})"
+                else:
+                    audio_info = "no audio atoms found (binary scan)"
+            except IOError:
+                audio_info = "could not read file"
 
         results[pair] = {'has_audio': has_audio, 'info': audio_info}
         print(f"  {pair}: Audio={'YES' if has_audio else 'NO'} ({audio_info})")

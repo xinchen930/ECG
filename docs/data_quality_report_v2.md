@@ -252,11 +252,27 @@ Note: pair_0003 (poor PPG quality) has a smaller ECG range (48.3) and notably th
 
 ### 4.3 IMU Utility Assessment
 
-Since all recordings are done while stationary (phone held against fingertip), IMU data has very limited signal variation. The primary utility of IMU for this project would be:
-1. **Motion artifact detection**: Flag rare moments of hand tremor
-2. **Ballistocardiography (BCG)**: The accelerometer *might* detect subtle heartbeat-induced vibrations, but at 0.006g std this is near the noise floor
+**⚠️ CORRECTION (2026-02-08)**: 初始评估低估了 IMU 的心跳检测能力。虽然宏观运动确实很小（静止录制），但高通滤波后的加速度计信号 **能检测到心跳微震动**（BCG/SCG 效应）。
 
-**IMU Verdict**: Data is clean and consistent, but the signal is near-static. IMU fusion may provide marginal benefit at best.
+**IMU 心跳检测验证**（高通滤波 + 自相关分析）：
+
+| Pair | 真实心率 | IMU检测心率 | 自相关 r | 结论 |
+|------|---------|------------|---------|------|
+| pair_0000 | 92 BPM | 94 BPM | 0.31 | 正确 |
+| pair_0010 | 91 BPM | 92 BPM | 0.63 | 正确（强信号） |
+| pair_0050 | 63 BPM | 62 BPM | 0.46 | 正确 |
+| pair_0080 | 75 BPM | 109 BPM | 0.07 | 失败 |
+
+- acc_z（重力轴）信号最强，std=0.006g 虽小但包含有意义的心跳周期性
+- 4个样本中3个准确检测心率（75%成功率），r 值 0.31-0.63
+- 这是典型的 **Ballistocardiography (BCG)** / **Seismocardiography (SCG)** 信号
+
+**IMU Utility**:
+1. **心跳节律辅助**：提供独立于视频的心率参考，可用于注意力引导或时序对齐
+2. **Motion artifact detection**：检测手部抖动（运动伪影）
+3. **多模态融合价值**：中等偏高（不是"marginal"），BCG 信号可与 PPG 互补
+
+**IMU Verdict**: 数据干净，包含有意义的心跳微震动信号。IMU 融合有中等价值，尤其是 acc_z 通道。建议在视频模型验证后纳入多模态融合。
 
 ---
 
@@ -376,15 +392,23 @@ Cross-correlation between PPG (red channel brightness, bandpass filtered) and EC
 
 ## 8. Audio Track Analysis
 
-Binary inspection of mp4 file headers for audio markers (`soun`, `mp4a`):
+**⚠️ CORRECTION (2026-02-08)**: 初始报告错误地声称视频无音轨。原因是检测脚本依赖 `ffprobe`（服务器未安装），失败后 fallback 逻辑缺失，`has_audio` 默认为 `False`。
+
+**重新验证**（二进制 mp4 atom 扫描）：
 
 | Pair | Audio Markers Found |
 |------|-------------------|
-| pair_0000 | None |
-| pair_0001 | None |
-| pair_0009 | None |
+| pair_0000 | soun + mp4a (AAC) + smhd |
+| pair_0001 | soun + mp4a (AAC) + smhd |
+| pair_0010 | soun + mp4a (AAC) + smhd |
+| pair_0020 | soun + mp4a (AAC) + smhd |
+| pair_0050 | soun + mp4a (AAC) + smhd |
+| pair_0080 | soun + mp4a (AAC) + smhd |
+| pair_0090 | soun + mp4a (AAC) + smhd |
 
-**Result**: Videos do **not contain audio tracks**. The phone app records video without microphone. Heartbeat sound detection is not possible from these files.
+**全部 98 个视频均包含 AAC 音轨。** 部分样本可听到明显的心跳声（用户反馈确认）。
+
+**Result**: 视频包含音轨，心音（PCG）融合 **可行**。音频可作为额外模态，用于心跳定位和辅助 ECG 重建。这是一个有价值的信号源，应在视频模型验证后纳入多模态融合。
 
 ---
 
@@ -440,7 +464,8 @@ User info is used for metadata only (not model input). These anomalies do **not 
 3. **Quality filter**: Use `good,moderate` (88 samples) for robust training
 4. **Consider excluding** pair_0097 (too short for meaningful windows)
 5. **Gap-aware windowing**: Add logic to skip training windows that span ECG timestamp gaps > 100ms
-6. **IMU fusion**: Expected marginal benefit since recordings are stationary. Consider making IMU optional or dropping it to simplify the model.
+6. **IMU fusion**: IMU (尤其 acc_z) 包含 BCG 心跳信号（75%样本可检测 HR），融合有中等价值。视频优先验证后纳入。
+7. **音频融合**: 全部视频含 AAC 音轨，部分可听到心跳声。PCG（心音）融合有潜力，待探索。
 
 ---
 
