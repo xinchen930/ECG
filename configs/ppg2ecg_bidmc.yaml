@@ -3,6 +3,8 @@
 # Paper: "Reconstructing QRS Complex from PPG by Transformed Attentional Neural Networks"
 # Dataset: BIDMC (53 subjects, 125 Hz, 8 min each)
 #
+# Matches reference implementation: james77777778/ppg2ecg-pytorch
+#
 # Usage:
 #   python models/train_ppg2ecg.py --config configs/ppg2ecg_bidmc.yaml
 
@@ -15,30 +17,28 @@ model:
 
 # Data configuration
 data:
-  train_path: external_data/bidmc_processed/train.pt
-  test_path: external_data/bidmc_processed/test.pt
+  train_path: /home/xinchen/ECG/external_data/bidmc_processed/train.pt
+  test_path: /home/xinchen/ECG/external_data/bidmc_processed/test.pt
   full_window: 512                 # Full window size for augmentation
   train_window: 256                # Training window (center crop with random offset)
   sampling_rate: 125               # Hz
 
-# Training configuration (matching original implementation)
+# Training configuration (matching reference: no scheduler, full 300 epochs)
 training:
   epochs: 300                      # From original BIDMC.cfg
   batch_size: 256                  # From original BIDMC.cfg
   learning_rate: 0.0001            # From original BIDMC.cfg (1e-4)
   optimizer: Adam
-  scheduler: CosineAnnealingLR     # Optional, enable with use_scheduler
-  use_scheduler: true
-  scheduler_period: 30             # T_max = epochs // 10
-  patience: 50                     # Early stopping patience
+  use_scheduler: false             # Reference does NOT use LR scheduler
+  patience: 300                    # Effectively no early stopping (train full 300 epochs)
   seed: 2019                       # From original BIDMC.cfg
-  data_augmentation: true          # Random offset augmentation
+  data_augmentation: true          # Random offset augmentation [-64, +64]
 
 # Loss configuration
 loss:
   type: qrs_enhanced               # qrs_enhanced or l1
   beta: 0.5                        # QRS weight (from original BIDMC.cfg)
-  sigma: 1.0                       # Gaussian sigma for R-peak expansion
+  sigma: 1.0                       # Gaussian sigma in SAMPLES (not seconds!)
 
 # Output configuration
 output:
@@ -49,5 +49,5 @@ output:
 
 # Device configuration
 device:
-  use_amp: true                    # Automatic Mixed Precision
+  use_amp: false                   # Disabled: grid_sample in STN has Half precision issues
   num_workers: 4                   # DataLoader workers

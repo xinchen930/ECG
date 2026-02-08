@@ -397,9 +397,15 @@ def train(cfg):
         if epoch % save_every == 0:
             torch.save(model.state_dict(), os.path.join(save_dir, f"model_epoch{epoch}.pt"))
 
-    # Save training history
+    # Save training history (convert numpy types to native Python)
+    history_serializable = {}
+    for k, v in history.items():
+        if isinstance(v, list):
+            history_serializable[k] = [float(x) if hasattr(x, 'item') else x for x in v]
+        else:
+            history_serializable[k] = v
     with open(os.path.join(save_dir, "training_history.json"), "w") as f:
-        json.dump(history, f, indent=2)
+        json.dump(history_serializable, f, indent=2)
 
     # Plot training curves
     if history['epoch']:

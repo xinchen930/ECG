@@ -107,7 +107,7 @@ def load_bidmc_signals_csv(data_dir: str) -> Dict[str, Dict[str, np.ndarray]]:
             ecg_col = None
 
             for col in df.columns:
-                col_lower = col.lower()
+                col_lower = col.strip().lower()
                 if 'pleth' in col_lower or 'ppg' in col_lower:
                     ppg_col = col
                 elif col_lower == 'ii' or 'ecg' in col_lower:
@@ -288,35 +288,35 @@ def expand_rpeaks_gaussian(rpeaks: np.ndarray, length: int, sigma: float = 1.0,
     Expand R-peak locations to Gaussian distributions.
 
     Creates a weight map where R-peak regions have higher values.
+    Uses scipy.stats.norm.pdf matching the reference implementation,
+    where sigma is in SAMPLES (not seconds).
 
     Args:
         rpeaks: R-peak indices
         length: Signal length
-        sigma: Gaussian sigma in seconds (default 1.0)
-        fs: Sampling rate
+        sigma: Gaussian sigma in SAMPLES (default 1.0 = very tight around R-peak)
+        fs: Sampling rate (unused, kept for API compat)
 
     Returns:
-        Gaussian-expanded R-peak weights [0, 1]
+        Gaussian-expanded R-peak weights, scaled to [0, 1]
     """
-    expansion = np.zeros(length, dtype=np.float32)
+    from scipy.stats import norm
 
     if len(rpeaks) == 0:
-        return expansion
+        return np.zeros(length, dtype=np.float32)
 
-    # Place impulses at R-peak locations
+    normal_rpeaks = np.zeros(length, dtype=np.float64)
+    x_range = np.arange(0, length)
+
     for peak in rpeaks:
         if 0 <= peak < length:
-            expansion[peak] = 1.0
+            normal_rpeaks += norm.pdf(x_range, loc=peak, scale=sigma)
 
-    # Apply Gaussian smoothing
-    sigma_samples = sigma * fs
-    expansion = gaussian_filter1d(expansion, sigma=sigma_samples)
+    # Scale to [0, 1] matching reference: (x - min) / ptp
+    if np.ptp(normal_rpeaks) > 0:
+        normal_rpeaks = (normal_rpeaks - np.min(normal_rpeaks)) / np.ptp(normal_rpeaks)
 
-    # Normalize to [0, 1]
-    if np.max(expansion) > 0:
-        expansion = expansion / np.max(expansion)
-
-    return expansion
+    return normal_rpeaks.astype(np.float32)
 
 
 def segment_signals(ppg: np.ndarray, ecg: np.ndarray,
