@@ -86,32 +86,56 @@ python models/dataset.py configs/scheme_c.yaml
 
 **状态：Phase 1-3 代码已完成，待训练验证。**
 
-已实现五套方案（移除了不适合的 ResNet 方案），通过 config 切换。**所有方案均支持可选 IMU 融合**（`use_imu: true`）：
+已实现八套方案，通过 config 切换。**所有方案均支持可选 IMU 融合**（`use_imu: true`）：
 
-| | Scheme C | Scheme D | Scheme E | Scheme F | Scheme G |
-|---|---|---|---|---|---|
-| 类型 | MTTS-CAN | 1D TCN | 1D UNet | EfficientPhys | PhysNet |
-| 架构 | 双分支+TSM | TCN (Dilated) | UNet跳跃连接 | 时空注意力 | 3D CNN |
-| 输入 | 差分帧+原始帧 | RGB均值 | 绿色通道 | 视频帧 | 视频帧 |
-| 分辨率 | 36×36 | 1D | 1D | 64×64 | 64×64 |
-| 参数量 | 2.8M | 276K | ~500K | ~1.5M | ~3-5M |
-| 显存 | ~15 GB | ~2 GB | ~3 GB | ~10-15 GB | ~20-25 GB |
-| 3090可跑 | ⚠️ batch=8 | ✅ | ✅ | ✅ batch=8 | ⚠️ batch=2-4 |
-| 配置文件 | `scheme_c.yaml` | `scheme_d.yaml` | `scheme_e.yaml` | `scheme_f.yaml` | `scheme_g.yaml` |
+**1D 信号方案（轻量，适合快速验证）：**
+
+| | Scheme D | Scheme E | Scheme E-RGB |
+|---|---|---|---|
+| 类型 | 1D TCN | 1D UNet | 1D UNet (3ch) |
+| 输入 | RGB均值 | **红色通道** | RGB三通道 |
+| 参数量 | 276K | ~500K | ~500K |
+| 显存 | ~2 GB | ~3 GB | ~3 GB |
+| 配置文件 | `scheme_d.yaml` | `scheme_e.yaml` | `scheme_e_rgb.yaml` |
+
+**2D 视频方案（中等复杂度）：**
+
+| | Scheme C | Scheme F | Scheme I-Direct | Scheme I-TwoStage |
+|---|---|---|---|---|
+| 类型 | MTTS-CAN | EfficientPhys | STMap直接 | STMap两阶段 |
+| 架构 | 双分支+TSM | 时空注意力 | 2D CNN→ECG | 2D CNN→PPG→ECG |
+| 输入 | 差分帧 36×36 | 视频帧 64×64 | STMap 8×8 | STMap 8×8 |
+| 参数量 | 2.8M | ~1.5M | ~200-400K | ~400-800K |
+| 配置文件 | `scheme_c.yaml` | `scheme_f.yaml` | `scheme_i_direct.yaml` | `scheme_i_twostage.yaml` |
+
+**3D 视频方案（最强但最耗显存）：**
+
+| | Scheme G | Scheme H |
+|---|---|---|
+| 类型 | PhysNet | **PhysFormer** |
+| 架构 | 3D CNN | TD-Transformer + CDC |
+| 输入 | 视频帧 64×64 | 视频帧 128×128 |
+| 参数量 | ~3-5M | ~8-12M |
+| 显存 | ~20-25 GB | ~20-30 GB |
+| 配置文件 | `scheme_g.yaml` | `scheme_h.yaml` |
 
 > 💡 使用 `--server 3090` 或 `--server a6000` 参数自动应用最优训练参数（batch_size、AMP、梯度累积等）
 
 > 💡 在任意 config 中设置 `data.use_imu: true` 即可启用 IMU 融合
 >
-> 💡 Scheme E 使用绿色通道（对血红蛋白最敏感）作为 PPG 信号
+> 💡 Scheme E 使用**红色通道**（接触式 PPG 最佳通道，数据验证 8/10 HR检测 vs 绿色 3/10）
 >
-> 💡 Scheme F/G 是 end-to-end 方案，直接处理视频帧，无需预提取 PPG
+> 💡 Scheme F/G/H 是 end-to-end 方案，直接处理视频帧
 >
-> 💡 设置 `data.quality_filter: "good"` 可过滤低质量样本（详见 `eval_results/data_quality_report.md`）
+> 💡 Scheme H (PhysFormer) 使用 Center-Difference Convolution 检测帧间微小亮度变化，理论上最适合 PPG 提取
 >
-> ⚠️ Scheme A/B (ResNet) 已移除：ResNet 为图像分类设计，会丢弃 PPG 所需的微小亮度变化信息
+> 💡 Scheme I (STMap) 保留空间信息的同时比全帧方案轻量得多
 >
-> ⚠️ Scheme G (PhysNet) 显存较大，3090 建议使用 A6000
+> 💡 设置 `data.quality_filter: "good"` 可过滤低质量样本（详见 `docs/data_quality_report_v2.md`）
+>
+> ⚠️ Scheme A/B (ResNet) 已移除：全局平均池化会丢弃 PPG 所需的微小亮度变化信息
+>
+> ⚠️ Scheme G/H 显存较大，3090 需小 batch + 梯度累积
 >
 > ⚠️ 数据质量：98个样本中有10个 poor 样本（HR误差>20BPM），建议过滤
 
@@ -120,19 +144,35 @@ python models/dataset.py configs/scheme_c.yaml
 ```
 models/
 ├── __init__.py
-├── dataset.py            # PyTorch Dataset（10s窗口切分、用户级划分、质量过滤、可选IMU/差分帧/1D信号/绿色通道）
-├── video_ecg_model.py    # 模型定义（C/D/E/F/G五种架构 + CompositeLoss）
-├── train.py              # 训练脚本（自动检测CUDA/MPS、early stopping）
+├── dataset.py            # PyTorch Dataset（gap-aware窗口、多输入模式：red/green/rgb/stmap）
+├── video_ecg_model.py    # 模型定义（C/D/E/F/G + CompositeLoss + CompositeLossV2）
+├── physformer_ecg.py     # PhysFormer-ECG（TD-Transformer + CDC, Scheme H）
+├── stmap_builder.py      # STMap构建器（grid/multi-scale/frequency模式）
+├── stmap_ecg.py          # STMap→ECG模型（direct + two-stage, Scheme I）
+├── train.py              # 训练脚本（自动检测CUDA/MPS、early stopping、PPG辅助loss）
 ├── run_eval.py           # 仅测试（加载 checkpoint 在 test 集评估）
 └── evaluate.py           # 评估（RMSE, MAE, Pearson r）
 
 configs/
 ├── scheme_c.yaml         # MTTS-CAN (差分帧 + 注意力, 2.8M)
 ├── scheme_d.yaml         # 1D TCN (RGB均值, 276K)
-├── scheme_e.yaml         # 1D UNet (绿色通道, ~500K)
+├── scheme_e.yaml         # 1D UNet (红色通道, ~500K)
+├── scheme_e_rgb.yaml     # 1D UNet (RGB三通道, ~500K)
 ├── scheme_f.yaml         # EfficientPhys (时空注意力, ~1.5M)
 ├── scheme_g.yaml         # PhysNet (3D CNN, ~3-5M)
+├── scheme_h.yaml         # PhysFormer (TD-Transformer + CDC, ~8-12M)
+├── scheme_i_direct.yaml  # STMap直接→ECG (~200-400K)
+├── scheme_i_twostage.yaml # STMap→PPG→ECG (~400-800K, 多任务)
 └── server_presets.yaml   # 服务器预设参数 (3090/A6000 自动配置)
+
+scripts/
+├── data_quality_check_v2.py       # 数据质量检查
+└── data_quality_deep_analysis.py  # 深度PPG/ECG交叉分析
+
+docs/
+├── research_report.md        # 方法综述（19种Video→PPG + 6种PPG→ECG）
+├── data_quality_report_v2.md # 数据质量报告
+└── project_structure.md      # 项目结构文档
 ```
 
 ### 数据管线验证结果
@@ -143,16 +183,19 @@ configs/
 - Scheme D 输入：`(300, 3)` [+ 可选 IMU] → 输出 `(2500,)`
 - Scheme E 输入：`(300, 1)` [+ 可选 IMU] → 输出 `(2500,)`
 - Scheme F/G 输入：`(300, 3, 64, 64)` [+ 可选 IMU] → 输出 `(2500,)`
+- Scheme H 输入：`(300, 3, 128, 128)` [+ 可选 IMU] → 输出 `(2500,)`
+- Scheme I 输入：`(300, 3, 8, 8)` STMap [+ 可选 IMU] → 输出 `(2500,)`
 
-（推荐先跑 scheme_e 或 scheme_f，前者最轻量，后者 end-to-end 效果可能更好。）
+（推荐运行顺序：E → I-direct → F → H，从轻到重逐步验证。）
 
 > 📖 **详细文档**：各方案原理、配置说明、验证步骤见 [SCHEMES.md](SCHEMES.md)
 
 ### 待改进
 
-- 模型架构可参考开源 PPG→ECG / Video→PPG 论文方案优化
-- 数据增强尚未实现
 - 尚未跑过完整训练，需在 GPU 服务器上验证
+- 数据增强尚未实现
+- 新数据（70-100样本，高分辨率~40MB/video）即将采集
+- 后续批次：Transfer learning (rPPG预训练)、PhysMamba、CardioGAN-style训练
 
 ---
 
