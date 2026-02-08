@@ -21,7 +21,7 @@ data:
 
 split:
   mode: user
-  train_users: [fzq, fcy, wjy, czq, syw, wcp]
+  train_users: [fzq, fcy, wjy, czq, syw, wcp, yjw, yyh]
   val_users: [nxs]
   test_users: [lrk, fhy]
 

@@ -381,18 +381,25 @@ Training control:
                         help="Use test set for early stopping (default: True for debugging)")
     parser.add_argument("--use-val", action="store_true",
                         help="Use separate validation set for early stopping (strict mode)")
+    parser.add_argument("--batch", type=str, default=None,
+                        help="Batch filter: 'batch_1', 'batch_2', 'batch_1,batch_2' (reads batch_index.json)")
     parser.add_argument("--data-dir", type=str, default=None,
                         help="Override data.samples_dir (e.g. training_data/batch1, training_data/batch2)")
     parser.add_argument("--run-tag", type=str, default=None,
-                        help="Extra tag appended to checkpoint dir name (e.g. 'batch1', 'batch1+2')")
+                        help="Extra tag appended to checkpoint dir name (e.g. 'b1', 'b2', 'b1+2')")
     args = parser.parse_args()
 
     cfg = load_config_with_server_preset(args.config, args.server)
 
-    # Override data directory for batch experiments
+    # Override data directory
     if args.data_dir is not None:
         cfg["data"]["samples_dir"] = args.data_dir
         print(f"Data dir override: {args.data_dir}")
+
+    # Batch filter
+    if args.batch is not None:
+        cfg["batch"] = args.batch
+        print(f"Batch filter: {args.batch}")
 
     # Override split mode from command line
     if args.split is not None:

@@ -24,7 +24,21 @@ def load_quality_data(quality_csv: str):
     return dict(zip(df['pair'], df['quality']))
 
 
-def load_metadata(samples_dir: str, quality_filter: str = None, quality_csv: str = None):
+def load_batch_index(batch_index_path: str):
+    """Load batch index JSON, return dict mapping pair_id (int) to batch name."""
+    if not os.path.exists(batch_index_path):
+        return None
+    with open(batch_index_path) as f:
+        batch_data = json.load(f)
+    id_to_batch = {}
+    for batch_name, info in batch_data.items():
+        for pid in info["pair_ids"]:
+            id_to_batch[pid] = batch_name
+    return id_to_batch
+
+
+def load_metadata(samples_dir: str, quality_filter: str = None, quality_csv: str = None,
+                  batch: str = None, batch_index_path: str = None):
     """
     Load metadata for all sample pairs, returning list of dicts.
 
@@ -33,14 +47,32 @@ def load_metadata(samples_dir: str, quality_filter: str = None, quality_csv: str
         quality_filter: Comma-separated quality levels to include, e.g. "good" or "good,moderate"
                        If None, include all samples.
         quality_csv: Path to quality CSV file (default: eval_results/ppg_analysis_all_samples.csv)
+        batch: Which batch(es) to use: "batch_1", "batch_2", "batch_1+2" (all), or None (all)
+        batch_index_path: Path to batch_index.json (default: {samples_dir}/../batch_index.json)
     """
     samples_dir = Path(samples_dir)
+
+    # Load batch index if batch filtering is requested
+    allowed_pair_ids = None
+    if batch and batch != "all":
+        if batch_index_path is None:
+            batch_index_path = str(samples_dir.parent / "batch_index.json")
+        batch_map = load_batch_index(batch_index_path)
+        if batch_map is None:
+            print(f"Warning: batch_index.json not found at {batch_index_path}, using all samples")
+        else:
+            # Parse batch spec: "batch_1", "batch_2", "batch_1+2"
+            requested_batches = set(b.strip() for b in batch.replace("+", ",").split(","))
+            allowed_pair_ids = set()
+            for pid, bname in batch_map.items():
+                if bname in requested_batches:
+                    allowed_pair_ids.add(pid)
+            print(f"Batch filter: {batch} -> {len(allowed_pair_ids)} pairs from {requested_batches}")
 
     # Load quality data if filtering is requested
     quality_map = None
     if quality_filter:
         if quality_csv is None:
-            # Default path relative to project root
             quality_csv = "eval_results/ppg_analysis_all_samples.csv"
         quality_map = load_quality_data(quality_csv)
         if quality_map is None:
@@ -50,18 +82,30 @@ def load_metadata(samples_dir: str, quality_filter: str = None, quality_csv: str
             print(f"Quality filter: keeping only {allowed_qualities} samples")
 
     records = []
-    filtered_count = 0
+    filtered_quality = 0
+    filtered_batch = 0
     for pair_dir in sorted(samples_dir.iterdir()):
         meta_path = pair_dir / "metadata.json"
         if not meta_path.exists():
             continue
 
-        # Apply quality filter if enabled
-        pair_name = pair_dir.name
+        pair_name = pair_dir.name  # e.g. "pair_0098"
+
+        # Apply batch filter
+        if allowed_pair_ids is not None:
+            try:
+                pair_id = int(pair_name.split("_")[1])
+            except (IndexError, ValueError):
+                continue
+            if pair_id not in allowed_pair_ids:
+                filtered_batch += 1
+                continue
+
+        # Apply quality filter
         if quality_map is not None:
             sample_quality = quality_map.get(pair_name)
             if sample_quality not in allowed_qualities:
-                filtered_count += 1
+                filtered_quality += 1
                 continue
 
         with open(meta_path) as f:
@@ -70,8 +114,11 @@ def load_metadata(samples_dir: str, quality_filter: str = None, quality_csv: str
         meta["pair_name"] = pair_name
         records.append(meta)
 
+    if allowed_pair_ids is not None:
+        print(f"Batch filter: {filtered_batch} samples excluded by batch")
     if quality_filter and quality_map:
-        print(f"Quality filter: {filtered_count} samples excluded, {len(records)} remaining")
+        print(f"Quality filter: {filtered_quality} samples excluded by quality")
+    print(f"Samples after filtering: {len(records)}")
 
     return records
 
@@ -424,14 +471,16 @@ def create_datasets(cfg, merge_val_to_train=False):
     data_cfg = cfg["data"]
     split_cfg = cfg["split"]
 
-    # Quality filtering
+    # Quality and batch filtering
     quality_filter = data_cfg.get("quality_filter", None)
     quality_csv = data_cfg.get("quality_csv", None)
+    batch = cfg.get("batch", None)
 
     records = load_metadata(
         data_cfg["samples_dir"],
         quality_filter=quality_filter,
-        quality_csv=quality_csv
+        quality_csv=quality_csv,
+        batch=batch,
     )
     print(f"Loaded {len(records)} sample pairs")
 
