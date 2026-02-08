@@ -53,7 +53,9 @@ train:
   seed: 42
   loss: composite_v2
   mse_weight: 1.0
-  pearson_weight: 0.5
+  pearson_weight: 2.0
   spectral_weight: 0.1
   stft_weight: 0.1
   qrs_weight: 0.2
+  dynamic_weighting: true
+  warmup_epochs: 20
