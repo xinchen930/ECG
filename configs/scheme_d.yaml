@@ -17,6 +17,9 @@ data:
   num_workers: 4
   quality_filter: "good,moderate"
   quality_csv: eval_results/ppg_analysis_all_samples.csv
+  ppg_bandpass: true
+  ppg_lowcut: 0.5
+  ppg_highcut: 5.0
 
 split:
   mode: user

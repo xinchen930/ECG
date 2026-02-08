@@ -13,7 +13,28 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
+from scipy import signal as scipy_signal
 from torch.utils.data import Dataset
+
+
+def bandpass_filter(data, lowcut=0.5, highcut=5.0, fs=30.0, order=4):
+    """Apply Butterworth bandpass filter to remove DC drift and high-freq noise.
+    Args:
+        data: 1D or 2D array (T,) or (T, C). Filters along axis 0.
+        lowcut/highcut: cutoff frequencies in Hz
+        fs: sampling frequency
+    """
+    nyq = fs / 2.0
+    low = max(lowcut / nyq, 0.01)
+    high = min(highcut / nyq, 0.99)
+    sos = scipy_signal.butter(order, [low, high], btype='bandpass', output='sos')
+    if data.ndim == 1:
+        return scipy_signal.sosfiltfilt(sos, data).astype(np.float32)
+    else:
+        out = np.empty_like(data)
+        for c in range(data.shape[1]):
+            out[:, c] = scipy_signal.sosfiltfilt(sos, data[:, c])
+        return out.astype(np.float32)
 
 
 def load_quality_data(quality_csv: str):
@@ -264,7 +285,9 @@ class VideoECGDataset(Dataset):
                  use_diff_frames=False, use_1d_signal=False, use_green_channel=False,
                  input_type=None,
                  stmap_grid_h=8, stmap_grid_w=8, stmap_channels="rgb",
-                 stmap_multiscale=False, stmap_scales=None):
+                 stmap_multiscale=False, stmap_scales=None,
+                 ppg_bandpass=True, ppg_lowcut=0.5, ppg_highcut=5.0,
+                 video_temporal_norm=False, video_fps=30):
         self.records = records
         self.window_index = window_index
         self.img_h = img_h
@@ -283,6 +306,11 @@ class VideoECGDataset(Dataset):
         # Falls back to use_green_channel boolean for backward compatibility
         self.input_type = input_type
         self.imu_window_len = int(imu_sr * window_sec)
+        self.ppg_bandpass = ppg_bandpass
+        self.ppg_lowcut = ppg_lowcut
+        self.ppg_highcut = ppg_highcut
+        self.video_fps = video_fps
+        self.video_temporal_norm = video_temporal_norm
 
         # STMap builder (only when input_type == "stmap")
         self.use_stmap = (input_type == "stmap")
@@ -371,6 +399,14 @@ class VideoECGDataset(Dataset):
                 )
             else:
                 stmap = self.stmap_builder.build(video_chw)
+            # Bandpass filter STMap to extract PPG cardiac component
+            if self.ppg_bandpass and stmap.shape[2] >= 30:
+                for c in range(stmap.shape[0]):
+                    for s in range(stmap.shape[1]):
+                        stmap[c, s] = bandpass_filter(
+                            stmap[c, s], lowcut=self.ppg_lowcut,
+                            highcut=self.ppg_highcut, fs=self.video_fps
+                        )
             # stmap: (C, N_spatial, T) — z-normalize per channel
             for c in range(stmap.shape[0]):
                 ch = stmap[c]  # (N_spatial, T)
@@ -399,6 +435,12 @@ class VideoECGDataset(Dataset):
             else:
                 raise ValueError(f"Unknown input_type: {effective_type}. "
                                  f"Use 'green_channel', 'red_channel', 'rgb_channels', 'all_channels', or 'rgb_means'.")
+            # CRITICAL: bandpass filter to extract PPG cardiac component
+            if self.ppg_bandpass and signal.shape[0] >= 30:
+                signal = bandpass_filter(
+                    signal, lowcut=self.ppg_lowcut, highcut=self.ppg_highcut,
+                    fs=self.video_fps
+                )
             # Z-normalize per channel
             signal_mean = signal.mean(axis=0, keepdims=True)
             signal_std = signal.std(axis=0, keepdims=True) + 1e-8
@@ -420,6 +462,9 @@ class VideoECGDataset(Dataset):
             combined = np.transpose(combined, (0, 3, 1, 2))
             video_tensor = torch.from_numpy(combined)
         else:
+            if self.video_temporal_norm:
+                temporal_mean = video.mean(axis=0, keepdims=True)  # (1, H, W, 3)
+                video = video - temporal_mean
             video = np.transpose(video, (0, 3, 1, 2))  # (T, 3, H, W)
             video_tensor = torch.from_numpy(video)
 
@@ -564,6 +609,13 @@ def create_datasets(cfg, merge_val_to_train=False):
     if img_w in (None, "auto", 0):
         img_w = 0
 
+    # PPG bandpass filter params
+    ppg_bandpass = data_cfg.get("ppg_bandpass", True)
+    ppg_lowcut = data_cfg.get("ppg_lowcut", 0.5)
+    ppg_highcut = data_cfg.get("ppg_highcut", 5.0)
+    video_temporal_norm = data_cfg.get("video_temporal_norm", False)
+    video_fps = data_cfg.get("video_fps", 30)
+
     kwargs = dict(
         img_h=img_h,
         img_w=img_w,
@@ -579,6 +631,11 @@ def create_datasets(cfg, merge_val_to_train=False):
         stmap_channels=stmap_channels,
         stmap_multiscale=stmap_multiscale,
         stmap_scales=stmap_scales,
+        ppg_bandpass=ppg_bandpass,
+        ppg_lowcut=ppg_lowcut,
+        ppg_highcut=ppg_highcut,
+        video_temporal_norm=video_temporal_norm,
+        video_fps=video_fps,
     )
 
     train_ds = VideoECGDataset(records, train_index, **kwargs)

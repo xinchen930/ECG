@@ -18,6 +18,7 @@ data:
   num_workers: 4
   quality_filter: "good,moderate"
   quality_csv: eval_results/ppg_analysis_all_samples.csv
+  video_temporal_norm: true
 
 split:
   mode: user
